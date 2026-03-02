@@ -1,6 +1,7 @@
 // FicusBot 工具配置文件
 // 支持 JSON5 格式，允许添加注释
 // 工具定义从此文件加载，支持 file、shell、skill 三类工具
+// 工具命名规范：使用下划线分隔，如 file_read、shell_exec（兼容 DeepSeek 等模型）
 
 {
   // ==========================================
@@ -9,9 +10,9 @@
   // ==========================================
   "file_tools": [
     {
-      "name": "file.read",           // 工具唯一标识符
+      "name": "file_read",           // 工具唯一标识符
       "method": "read",              // FileSystemTool 中的方法名
-      "description": "Read file content. View code, configs, docs. Params: file_path required, encoding optional (utf-8). Ex: file.read({file_path:'src/main.py'})",
+      "description": "Read file content. View code, configs, docs. Params: file_path required, encoding optional (utf-8). Ex: file_read({file_path:'src/main.py'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -22,9 +23,9 @@
       }
     },
     {
-      "name": "file.write",
+      "name": "file_write",
       "method": "write",
-      "description": "Create or overwrite file. Write code, configs, text. Params: file_path required, content required, overwrite optional (true). Ex: file.write({file_path:'test.py',content:'print(1)' })",
+      "description": "Create or overwrite file. Write code, configs, text. Params: file_path required, content required, overwrite optional (true). Ex: file_write({file_path:'test.py',content:'print(1)' })",
       "parameters": {
         "type": "object",
         "properties": {
@@ -36,9 +37,9 @@
       }
     },
     {
-      "name": "file.append",
+      "name": "file_append",
       "method": "append",
-      "description": "Append content to file end. Add logs, comments. Params: file_path required, content required. Ex: file.append({file_path:'log.txt',content:'new line'})",
+      "description": "Append content to file end. Add logs, comments. Params: file_path required, content required. Ex: file_append({file_path:'log.txt',content:'new line'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -49,22 +50,9 @@
       }
     },
     {
-      "name": "file.mkdir",
-      "method": "mkdir",
-      "description": "Create directory. Build project structure. Params: dir_path required, recursive optional (true). Ex: file.mkdir({dir_path:'src/utils'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "dir_path": {"type": "string", "description": "目录路径（相对路径或绝对路径）"},
-          "recursive": {"type": "boolean", "description": "是否递归创建，默认true"}
-        },
-        "required": ["dir_path"]
-      }
-    },
-    {
-      "name": "file.list_dir",
+      "name": "file_list_dir",
       "method": "list_dir",
-      "description": "List directory contents. MUST use a confirmed path. Params: dir_path optional, show_hidden optional. Ex: file.list_dir({dir_path:'src'})",
+      "description": "List directory contents. MUST use a confirmed path. Params: dir_path optional, show_hidden optional. Ex: file_list_dir({dir_path:'src'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -74,9 +62,9 @@
       }
     },
     {
-      "name": "file.find",
+      "name": "file_find",
       "method": "find",
-      "description": "Recursively search files. MUST use a confirmed root_path. Params: root_path required, pattern optional, file_type optional, content_keyword optional. Ex: file.find({root_path:'.',pattern:'*.py'})",
+      "description": "Recursively search files. MUST use a confirmed root_path. Params: root_path required, pattern optional, file_type optional, content_keyword optional. Ex: file_find({root_path:'.',pattern:'*.py'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -88,9 +76,9 @@
       }
     },
     {
-      "name": "file.exists",
+      "name": "file_exists",
       "method": "exists",
-      "description": "Check if file or directory exists. Validate path. Params: path required. Ex: file.exists({path:'src'})",
+      "description": "Check if file or directory exists. Validate path. Params: path required. Ex: file_exists({path:'src'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -100,54 +88,13 @@
       }
     },
     {
-      "name": "file.move",
-      "method": "move",
-      "description": "Move file or directory. Relocate files. Params: source_path required, target_path required. Ex: file.move({source_path:'a.txt',target_path:'b.txt'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "source_path": {"type": "string", "description": "源路径（相对路径或绝对路径）"},
-          "target_path": {"type": "string", "description": "目标路径（相对路径或绝对路径）"}
-        },
-        "required": ["source_path", "target_path"]
-      }
-    },
-    {
-      "name": "file.copy",
-      "method": "copy",
-      "description": "Copy file or directory. Backup files. Params: source_path required, target_path required, overwrite optional (false). Ex: file.copy({source_path:'a.txt',target_path:'b.txt'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "source_path": {"type": "string", "description": "源路径（相对路径或绝对路径）"},
-          "target_path": {"type": "string", "description": "目标路径（相对路径或绝对路径）"},
-          "overwrite": {"type": "boolean", "description": "是否覆盖，默认false"}
-        },
-        "required": ["source_path", "target_path"]
-      }
-    },
-    {
-      "name": "file.delete",
-      "method": "delete",
-      "description": "Delete file or directory. Remove temp files. Params: path required, recursive optional, force optional. Ex: file.delete({path:'temp.txt'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {"type": "string", "description": "文件/目录路径（相对路径或绝对路径）"},
-          "recursive": {"type": "boolean", "description": "递归删除目录，默认false"},
-          "force": {"type": "boolean", "description": "强制删除目录，默认false"}
-        },
-        "required": ["path"]
-      }
-    },
-    {
       // 获取系统特殊文件夹路径
       // Windows: 使用 PowerShell [Environment]::GetFolderPath()
       // Linux/Mac: 使用 xdg-user-dir 或环境变量
       // 支持中英文名称：Desktop/桌面, Downloads/下载, Documents/文档等
-      "name": "file.get_system_folder",
+      "name": "file_get_system_folder",
       "method": "get_system_folder",
-      "description": "Get system special folder path (Windows/Linux/Mac). Retrieve Desktop, Downloads, Documents, Pictures, Videos, Music folders. Supports both English and Chinese names. Returns absolute path for file operations. Use this first before file.list_dir/file.find when targeting system folders. Params: folder_name required. Ex: file.get_system_folder({folder_name:'Desktop'})",
+      "description": "Get system special folder path (Windows/Linux/Mac). Retrieve Desktop, Downloads, Documents, Pictures, Videos, Music folders. Supports both English and Chinese names. Returns absolute path for file operations. Use this first before file_list_dir/file_find when targeting system folders. Params: folder_name required. Ex: file_get_system_folder({folder_name:'Desktop'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -164,9 +111,9 @@
   // ==========================================
   "shell_tools": [
     {
-      "name": "shell.exec",
+      "name": "shell_exec",
       "method": "exec",
-      "description": "Execute shell command. Run programs, scripts, file ops. Params: cmd required, cwd optional. Ex: shell.exec({cmd:'python test.py'})",
+      "description": "Execute shell command. Run programs, scripts, file ops. Params: cmd required, cwd optional. Ex: shell_exec({cmd:'python test.py'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -185,5 +132,162 @@
   "skill_tools": {
     "enabled": true,                    // 是否启用技能系统
     "description": "Load and execute custom skills from workspace/skills directory"
-  }
+  },
+
+  // ==========================================
+  // 浏览器操作工具
+  // 对应 BrowserTool 类中的方法
+  // ==========================================
+  "browser_tools": [
+    {
+      "name": "browser_navigate",
+      "method": "navigate",
+      "description": "Navigate to URL. Open webpage. Params: url(required). Ex: browser_navigate({url:'https://example.com'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string", "description": "目标URL"}
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "browser_click",
+      "method": "click",
+      "description": "Click element by index. Params: index(required, element index from page state). Ex: browser_click({index:5})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "index": {"type": "integer", "description": "页面状态中的元素索引"}
+        },
+        "required": ["index"]
+      }
+    },
+    {
+      "name": "browser_input",
+      "method": "input_text",
+      "description": "Input text into element. Params: index(required), text(required), clear(optional, default true). Ex: browser_input({index:10, text:'hello'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "index": {"type": "integer", "description": "元素索引"},
+          "text": {"type": "string", "description": "输入文本"},
+          "clear": {"type": "boolean", "description": "是否先清空输入框", "default": true}
+        },
+        "required": ["index", "text"]
+      }
+    },
+    {
+      "name": "browser_scroll",
+      "method": "scroll",
+      "description": "Scroll page. Params: direction(optional, up/down, default down), pages(optional, default 1). Ex: browser_scroll({direction:'down', pages:1})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": {"type": "string", "enum": ["up", "down"], "description": "滚动方向", "default": "down"},
+          "pages": {"type": "number", "description": "滚动页数", "default": 1.0}
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "browser_extract",
+      "method": "extract",
+      "description": "Extract page content as plain text. Use format='markdown' only if user explicitly needs markdown format. Ex: browser_extract({}) or browser_extract({selector:'article'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "selector": {"type": "string", "description": "CSS选择器（可选，为空则提取整个页面）"},
+          "format": {"type": "string", "enum": ["text", "markdown"], "description": "输出格式（默认text），仅在明确需要时使用markdown", "default": "text"}
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "browser_send_keys",
+      "method": "send_keys",
+      "description": "Send keyboard keys. Params: keys(required). Ex: browser_send_keys({keys:'Enter'}) or browser_send_keys({keys:'Control+A'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keys": {"type": "string", "description": "按键序列，如 Enter, Tab, Escape, Control+A"}
+        },
+        "required": ["keys"]
+      }
+    },
+    {
+      "name": "browser_go_back",
+      "method": "go_back",
+      "description": "Go back to previous page. No params. Ex: browser_go_back({})",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "browser_get_state",
+      "method": "get_state",
+      "description": "Get page state with clickable elements. Returns URL, title, element list and page summary. Token-optimized with configurable mode.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["interactive", "minimal", "full"],
+            "description": "提取模式: interactive(仅交互元素), minimal(仅核心元素), full(所有元素). 默认: interactive",
+            "default": "interactive"
+          },
+          "max_elements": {
+            "type": "integer",
+            "description": "最大返回元素数（默认20，范围5-50）",
+            "default": 20
+          },
+          "prioritize_visible": {
+            "type": "boolean",
+            "description": "仅包含视口可见元素（默认true）",
+            "default": true
+          },
+          "include_summary": {
+            "type": "boolean",
+            "description": "包含页面文本摘要（默认true）",
+            "default": true
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "browser_switch_tab",
+      "method": "switch_tab",
+      "description": "Switch to tab by index. Params: tab_index(required). Ex: browser_switch_tab({tab_index:1})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tab_index": {"type": "integer", "description": "标签页索引（从0开始）"}
+        },
+        "required": ["tab_index"]
+      }
+    },
+    {
+      "name": "browser_close_tab",
+      "method": "close_tab",
+      "description": "Close current tab. No params. Ex: browser_close_tab({})",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "browser_list_tabs",
+      "method": "list_tabs",
+      "description": "List all open tabs. No params. Ex: browser_list_tabs({})",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
 }

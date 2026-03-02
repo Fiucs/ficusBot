@@ -222,7 +222,7 @@ class SkillLoader:
             }
             
         使用场景:
-            当大模型调用 skill.xxx 工具时，此方法被触发，返回的技能说明
+            当大模型调用 skill_xxx 工具时，此方法被触发，返回的技能说明
             会被添加到对话历史中，大模型根据说明内容决定后续的工具调用。
         """
         if skill_alias not in self.skills:
@@ -254,9 +254,9 @@ class SkillLoader:
 
 【重要提醒】
 1. 技能文档已注入到 system prompt 的「当前激活技能」部分，请立即阅读
-2. 按照文档中的「执行步骤」调用具体工具（如 shell.exec、file.read 等）
+2. 按照文档中的「执行步骤」调用具体工具（如 shell_exec、file_read 等）
 3. 技能激活一次即可，文档会保留在 system prompt 中供你随时参考
-4. 不要重复调用 skill.{skill['alias']}，直接执行文档中的工具调用
+4. 不要重复调用 skill_{skill['alias']}，直接执行文档中的工具调用
 5. 不要等待用户确认，看到文档后立即执行其中的步骤
 
 请参考 system prompt 中的完整文档来完成任务。"""
@@ -302,7 +302,7 @@ class SkillLoader:
             definitions.append({
                 "type": "function",
                 "function": {
-                    "name": f"skill.{skill['alias']}",
+                    "name": f"skill_{skill['alias']}",
                     "description": skill["description"],
                     "parameters": {
                         "type": "object",

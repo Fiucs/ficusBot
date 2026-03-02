@@ -70,7 +70,7 @@ class ToolAdapter:
             skill_defs = self.skill_loader.get_skill_tool_definitions()
             for defi in skill_defs:
                 func_name = defi["function"]["name"]
-                alias = func_name.split(".")[1]
+                alias = func_name.split("_")[1]
                 all_tool_defs.append({
                     "name": func_name,
                     "func": lambda alias=alias, **kwargs: self.skill_loader.execute(alias, kwargs),
@@ -109,13 +109,13 @@ class ToolAdapter:
               - skill 工具：lambda 函数包装器
               
         参数:
-            tool_name: 工具名称，如 "file.read", "shell.exec", "skill.xxx", "agent.xxx.delegate"
+            tool_name: 工具名称，如 "file_read", "shell_exec", "skill_xxx", "agent_xxx_delegate"
             arguments: 工具参数字典，如 {"file_path": "test.txt"}
             
         返回:
             工具执行结果字典，包含 status、message 等字段
         """
-        if tool_name.startswith("agent."):
+        if tool_name.startswith("agent_"):
             from agent.tool.subagent_tool import SubAgentTool
             subagent_tool = SubAgentTool(self.delegation_depth)
             return subagent_tool.call(tool_name, arguments)

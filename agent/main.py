@@ -6,16 +6,11 @@
 
 import json
 import re
-import threading
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from colorama import Fore, Style, init
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
-from pydantic import BaseModel
-import uvicorn
 
 from .config.configloader import GLOBAL_CONFIG
 from .core.conversation import ConversationManager
@@ -241,13 +236,13 @@ class Agent:
     
     核心方法:
         - chat: 非流式对话（用于CLI和API）
-        - fake_chat_stream: 模拟流式对话（用于旧API兼容）
+        - chat_stream: 流式对话（用于旧API兼容）
         - reload: 重载所有组件配置
     
     技能调用流程:
         1. 用户输入 → _detect_skill_from_input 检测技能
         2. 准备工具清单 → _prepare_tools_for_skill 优先显示检测到的技能
-        3. 大模型选择 skill.xxx → ToolAdapter.call_tool 调用
+        3. 大模型选择 skill_xxx → ToolAdapter.call_tool 调用
         4. SkillLoader.execute 返回技能说明（非直接执行）
         5. 大模型根据说明选择具体工具 → 多轮工具调用 → 完成
     
@@ -404,7 +399,7 @@ class Agent:
             - 重新初始化所有工具（文件、Shell、技能）
             - 重新初始化 MCP 模块
             - 重载 LLM 客户端配置
-            - 重建系统提示词
+            - 热加载系统提示词（从 prompts.md）
         """
         GLOBAL_CONFIG.reload()
         self.file_tool = FileSystemTool()
@@ -412,7 +407,7 @@ class Agent:
         self.skill_loader.load_all_skills()
         self.tool_adapter = ToolAdapter(self.file_tool, self.shell_tool, self.skill_loader)
         self.llm_client.reload_config()
-        self.conversation.system_prompt = self.conversation._build_system_prompt()
+        self.conversation.reload_prompt()
         
         skill_list_str = self.skill_loader.get_skill_list_info()
         self.conversation.inject_skill_list(skill_list_str)
@@ -501,7 +496,7 @@ class Agent:
             skill_name = self._detect_skill_from_input(None)
         
         if skill_name:
-            skill_tool_name = f"skill.{skill_name}"
+            skill_tool_name = f"skill_{skill_name}"
             skill_tool = None
             other_tools = []
             
@@ -563,14 +558,14 @@ class Agent:
         1. 检查消息是否包含工具调用
         2. 将 assistant 的 tool_calls 消息添加到对话历史
         3. 遍历每个工具调用：
-           - 如果是 skill.xxx 调用，获取技能文档并注入到 system prompt
+           - 如果是 skill_xxx 调用，获取技能文档并注入到 system prompt
            - 解析工具参数
            - 执行工具并记录结果
            - 根据执行结果记录日志（成功/失败）
         4. 将工具执行结果添加到对话历史
 
         技能文档注入机制：
-        - 当大模型首次调用 skill.xxx 时，将技能完整文档注入 system prompt
+        - 当大模型首次调用 skill_xxx 时，将技能完整文档注入 system prompt
         - 注入后大模型能在后续轮次中看到完整的技能说明
         - 技能文档会在任务完成后自动清理
 
@@ -631,8 +626,8 @@ class Agent:
                 continue
 
             # 技能调用特殊处理：先确保技能文档已注入，再检查重复调用
-            if tool_name.startswith("skill."):
-                skill_name = tool_name.replace("skill.", "")
+            if tool_name.startswith("skill_"):
+                skill_name = tool_name.replace("skill_", "")
                 
                 # 【关键修复】先确保技能文档已注入到 system prompt
                 # 这样大模型在下一轮能看到完整的技能说明
@@ -647,7 +642,7 @@ class Agent:
                     if self._last_skill_repeat_count >= self._max_skill_repeats:
                         # 达到最大重复次数，阻止该技能工具
                         self._blocked_skills.add(tool_name)
-                        error_msg = f"错误：技能 '{skill_name}' 已被调用过，文档已在 system prompt 中。该技能工具已被临时禁用，请直接调用文档中指定的工具（如 shell.exec）来完成任务。"
+                        error_msg = f"错误：技能 '{skill_name}' 已被调用过，文档已在 system prompt 中。该技能工具已被临时禁用，请直接调用文档中指定的工具（如 shell_exec）来完成任务。"
                         logger.warning(f"{Fore.RED}⚠ 检测到第 {self._last_skill_repeat_count + 1} 次重复调用技能: {tool_name}，已阻止该技能工具{Style.RESET_ALL}")
                         self.conversation.add_tool_result(tool_call.id, tool_name, error_msg)
                         continue
@@ -751,7 +746,7 @@ class Agent:
     # 返回：AsyncGenerator[str, None] - 流式输出生成器
     """    
     
-    async def fake_chat_stream(self, user_input: str) -> AsyncGenerator[str, None]:
+    async def chat_stream(self, user_input: str) -> AsyncGenerator[str, None]:
         """
         模拟流式对话方法。
 
@@ -778,7 +773,7 @@ class Agent:
         1. 添加用户消息到历史
         2. 检测指定技能
         3. 循环调用大模型处理工具调用：
-           - 如果大模型调用 skill.xxx，自动注入技能文档到 system prompt
+           - 如果大模型调用 skill_xxx，自动注入技能文档到 system prompt
            - 大模型根据注入的文档指导后续工具调用
         4. 任务完成后清理注入的技能文档
         5. 返回最终回答
@@ -816,9 +811,9 @@ class Agent:
         logger.debug(f"[工具准备] 工具数: {len(tools)}")
         
         # 遍历打印工具列表
-        logger.debug(f"[工具准备] 工具列表：")
-        for tool in tools:
-            logger.debug(f"工具名: {tool}")
+        # logger.debug(f"[工具准备] 工具列表：")
+        # for tool in tools:
+        #     logger.debug(f"工具名: {tool}")
         logger.info(f"系统提示词: {self.conversation.system_prompt}")
 
         while current_tool_calls < self.max_tool_calls:
@@ -826,7 +821,7 @@ class Agent:
             logger.debug(f"[LLM调用] 第 {current_tool_calls} 轮, 消息数: {len(self.conversation.get_messages())}")
             logger.info(f"[第 {current_tool_calls} 轮] 调用大模型...")
             # logger.info(f"系统提示词: {self.conversation.system_prompt}")
-
+            # logger.info(f"对话请求内容: {self.conversation.get_messages()}")
             try:
                 response = self.llm_client.chat_completion(
                     messages=self.conversation.get_messages(),
@@ -849,11 +844,20 @@ class Agent:
                 context_window = self.llm_client.get_context_window()
                 context_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
                 context_usage_percent = (context_tokens / context_window * 100) if context_window > 0 else 0
+                total_tokens = total_prompt_tokens + total_completion_tokens
+                elapsed = time.time() - start_time
+                context_window_display = f"{context_window // 1000}k" if context_window >= 1000 else str(context_window)
+
+                logger.error(f"大模型调用失败：{str(e)}")
+                logger.debug(f"📊 耗时: {elapsed:.2f}s | 输入: {total_prompt_tokens} | 输出: {total_completion_tokens} | 总计: {total_tokens}")
+                logger.debug(f"📋 上下文: {context_usage_percent:.1f}% of {context_window_display}")
+
                 return {
                     "content": f"大模型调用失败：{str(e)}",
-                    "elapsed_time": time.time() - start_time,
+                    "elapsed_time": elapsed,
                     "total_prompt_tokens": total_prompt_tokens,
                     "total_completion_tokens": total_completion_tokens,
+                    "total_tokens": total_tokens,
                     "context_window": context_window,
                     "context_usage_percent": context_usage_percent
                 }
@@ -867,7 +871,7 @@ class Agent:
                 elapsed = time.time() - start_time
                 response_len = len(message.content) if message.content else 0
                 logger.info(f"[对话结束] 会话: {self.conversation.session_id}, 回答长度: {response_len}, 耗时: {elapsed:.2f}s")
-                logger.info("[完成] 回答生成完成")
+                logger.info(f"[完成] 回答生成完成:{message.content}")
 
                 if self.conversation.has_injected_skill():
                     self.conversation.clear_injected_document()
@@ -882,12 +886,19 @@ class Agent:
                 context_window = self.llm_client.get_context_window()
                 context_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
                 context_usage_percent = (context_tokens / context_window * 100) if context_window > 0 else 0
+                total_tokens = total_prompt_tokens + total_completion_tokens
+                context_window_display = f"{context_window // 1000}k" if context_window >= 1000 else str(context_window)
+
+                logger.debug(f"✓ 回答完成")
+                logger.debug(f"📊 耗时: {elapsed:.2f}s | 输入: {total_prompt_tokens} | 输出: {total_completion_tokens} | 总计: {total_tokens}")
+                logger.debug(f"📋 上下文: {context_usage_percent:.1f}% of {context_window_display}")
 
                 return {
                     "content": message.content or "",
                     "elapsed_time": elapsed,
                     "total_prompt_tokens": total_prompt_tokens,
                     "total_completion_tokens": total_completion_tokens,
+                    "total_tokens": total_tokens,
                     "context_window": context_window,
                     "context_usage_percent": context_usage_percent
                 }
@@ -905,14 +916,21 @@ class Agent:
         context_window = self.llm_client.get_context_window()
         context_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
         context_usage_percent = (context_tokens / context_window * 100) if context_window > 0 else 0
+        total_tokens = total_prompt_tokens + total_completion_tokens
+        elapsed = time.time() - start_time
+        context_window_display = f"{context_window // 1000}k" if context_window >= 1000 else str(context_window)
 
         logger.warning(f"[对话结束] 会话: {self.conversation.session_id}, 原因: 达到最大工具调用轮数")
         logger.warning("[警告] 达到最大工具调用轮数")
+        logger.debug(f"📊 耗时: {elapsed:.2f}s | 输入: {total_prompt_tokens} | 输出: {total_completion_tokens} | 总计: {total_tokens}")
+        logger.debug(f"📋 上下文: {context_usage_percent:.1f}% of {context_window_display}")
+
         return {
             "content": "已达到最大工具调用轮数，无法继续执行",
-            "elapsed_time": time.time() - start_time,
+            "elapsed_time": elapsed,
             "total_prompt_tokens": total_prompt_tokens,
             "total_completion_tokens": total_completion_tokens,
+            "total_tokens": total_tokens,
             "context_window": context_window,
             "context_usage_percent": context_usage_percent
         }
@@ -957,110 +975,28 @@ def start_agents(agent_ids: Optional[List[str]] = None) -> Dict[str, "Agent"]:
 #   agents = start_agents()  # 启动所有
 #   agents = start_agents(["default", "coder"])  # 启动指定
 
-# ======================================
-# 7. FastAPI 网页端API服务（完全不变）
-# ======================================
-app = FastAPI(title="Agent助手API", description="网页端专用API接口", version="2.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class ChatRequest(BaseModel):
-    message: str
-
-class SwitchModelRequest(BaseModel):
-    model_alias: str
-
-@app.get("/health")
-async def health_check():
-    agent = get_agent()
-    return {"status": "success", "message": "服务运行正常", "current_model": agent.llm_client.current_model_alias}
-
-@app.get("/api/models")
-async def get_models():
-    agent = get_agent()
-    return {"status": "success", "data": agent.llm_client.list_models()}
-
-@app.post("/api/models/switch")
-async def switch_model(request: SwitchModelRequest):
-    agent = get_agent()
-    result = agent.llm_client.switch_model(request.model_alias)
-    if result["status"] == "error":
-        raise HTTPException(status_code=400, detail=result["message"])
-    return result
-
-@app.post("/api/reload")
-async def reload_config():
-    agent = get_agent()
-    agent.reload()
-    return {"status": "success", "message": "配置/技能重载完成"}
-
-@app.get("/api/tools")
-async def get_tools():
-    agent = get_agent()
-    return {"status": "success", "data": agent.tool_adapter.list_tools()}
-
-@app.get("/api/skills")
-async def get_skills():
-    agent = get_agent()
-    return {"status": "success", "data": agent.skill_loader.skills}
-
-@app.post("/api/context/clear")
-async def clear_context():
-    agent = get_agent()
-    return agent.conversation.clear()
-
-@app.post("/api/chat")
-async def chat(request: ChatRequest):
-    agent = get_agent()
-    try:
-        result = agent.chat(request.message)
-        return {"status": "success", "content": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/chat/{agent_id}")
-async def chat_with_agent(agent_id: str, request: ChatRequest):
-    """使用指定 Agent 进行对话"""
-    try:
-        agent = get_agent(agent_id)
-        result = agent.chat(request.message)
-        return {"status": "success", "content": result, "agent_id": agent_id}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/chat/stream")
-async def chat_stream(request: Request):
-    agent = get_agent()
-    try:
-        body = await request.json()
-        message = body.get("message", "")
-        result = agent.chat(message)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def get_app():
+    """
+    获取 FastAPI 应用实例（向后兼容）。
+    
+    返回:
+        FastAPI: FastAPI 应用实例
+    """
+    from agent.server.http import create_app
+    return create_app()
 
 
+# 向后兼容：导出 app 变量
+app = None  # 延迟初始化
 
 
-# ======================================
-# 8. 程序启动入口
-# ======================================
-def start_api_server():
-    """启动 API 服务器。"""
-    host = GLOBAL_CONFIG.get("api.host", "0.0.0.0")
-    port = GLOBAL_CONFIG.get("api.port", 8000)
-    try:
-        uvicorn.run(app, host=host, port=port, log_level="warning")
-    except Exception as e:
-        logger.error(f"{Fore.RED}❌ API服务启动失败：{str(e)}{Style.RESET_ALL}")
+def _get_app():
+    """延迟初始化 app"""
+    global app
+    if app is None:
+        app = get_app()
+    return app
 
 # def main():
 #     """

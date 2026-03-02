@@ -42,11 +42,15 @@
 import asyncio
 import base64
 import concurrent.futures
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from loguru import logger
 from colorama import Fore, Style
 
 from agent.config.configloader import GLOBAL_CONFIG
+
+
+TOOLS_CONFIG_PATH = Path(__file__).parent / "tools.json"
 
 
 class BrowserTool:
@@ -199,10 +203,32 @@ class BrowserTool:
     
     def _get_tool_definitions(self) -> List[Dict[str, Any]]:
         """
-        Get tool definitions list
+        Get tool definitions list from tools.json
         
         Returns:
             List of tool definitions, each containing name, method, description, parameters
+        """
+        try:
+            import json5
+            
+            if TOOLS_CONFIG_PATH.exists():
+                with open(TOOLS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    config = json5.load(f)
+                    browser_tools = config.get("browser_tools", [])
+                    if browser_tools:
+                        logger.debug(f"[Browser] 从 tools.json 加载 {len(browser_tools)} 个工具定义")
+                        return browser_tools
+        except Exception as e:
+            logger.warning(f"[Browser] 加载 tools.json 失败: {e}，使用内置定义")
+        
+        return self._get_builtin_tool_definitions()
+    
+    def _get_builtin_tool_definitions(self) -> List[Dict[str, Any]]:
+        """
+        Get built-in tool definitions as fallback
+        
+        Returns:
+            List of built-in tool definitions
         """
         return [
             {
@@ -269,19 +295,6 @@ class BrowserTool:
                     "required": []
                 }
             },
-            # 截图工具已禁用，截图走另外的方案
-            # {
-            #     "name": "browser.screenshot",
-            #     "method": "screenshot",
-            #     "description": "Take screenshot. Params: path(optional, save path). Returns base64 image. Ex: browser.screenshot({})",
-            #     "parameters": {
-            #         "type": "object",
-            #         "properties": {
-            #             "path": {"type": "string", "description": "Screenshot save path (optional)"}
-            #         },
-            #         "required": []
-            #     }
-            # },
             {
                 "name": "browser.send_keys",
                 "method": "send_keys",

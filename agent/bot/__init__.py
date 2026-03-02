@@ -1,34 +1,49 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
 # @FileName  :__init__.py
-# @Time      :2026/02/22
+# @Time      :2026/03/02
 # @Author    :Ficus
 
 """
-Bot 网关模块
+Bot 网关模块（向后兼容）
 
-功能说明:
-    - 提供可扩展的多平台机器人网关
-    - 支持多种聊天平台（Telegram、飞书、Discord等）
-    - 统一消息格式，解耦监听器与核心处理器
-
-核心组件:
-    - MessageBus: 消息总线
-    - BaseListener: 基础监听器接口
-    - Gateway: 网关主程序
-    - CoreProcessor: 核心处理器
-    - EchoProcessor: 回声处理器（测试用）
+警告:
+    此模块已重命名为 agent.server，请使用:
+        from agent.server import ...
+    
+    此模块将在未来版本中移除。
 """
 
-from .message_bus import MessageBus, UnifiedMessage, OutgoingMessage, EventEnvelope
-from .base_listener import BaseListener
-from .gateway import Gateway
-from .core_processor import CoreProcessor, EchoProcessor
-from .listeners import (
+import warnings
+
+# 发出弃用警告
+warnings.warn(
+    "agent.bot 已弃用，请使用 agent.server",
+    DeprecationWarning,
+    stacklevel=2
+)
+
+# 重导出所有内容
+from agent.server import *
+from agent.server import (
+    MessageBus,
+    UnifiedMessage, 
+    OutgoingMessage,
+    EventEnvelope,
+    BaseListener,
+    Gateway,
+    CoreProcessor,
+    EchoProcessor,
     TelegramListener,
     LarkListener,
     DiscordListener,
-    get_listener_class
+    get_listener_class,
+    InterceptResult,
+    Interceptor,
+    InterceptorChain,
+    AuthInterceptor,
+    RateLimitInterceptor,
+    SensitiveWordInterceptor,
 )
 
 __all__ = [
@@ -43,5 +58,11 @@ __all__ = [
     "TelegramListener",
     "LarkListener",
     "DiscordListener",
-    "get_listener_class"
+    "get_listener_class",
+    "InterceptResult",
+    "Interceptor",
+    "InterceptorChain",
+    "AuthInterceptor",
+    "RateLimitInterceptor",
+    "SensitiveWordInterceptor",
 ]

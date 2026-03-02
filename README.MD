@@ -1,7 +1,15 @@
-# FicusBot
+# 🌳 FicusBot
 
 <p align="center">
-  <strong>基于 LiteLLM 的智能 Agent 系统</strong>
+  <strong>🤖 智能多平台 AI 助手</strong>
+</p>
+
+<p align="center">
+  <em>多模型 • 多Agent • 多平台 • MCP协议 • 技能扩展</em>
+</p>
+
+<p align="center">
+  基于 LiteLLM 构建，支持 QQ/Telegram/飞书/Discord/钉钉/Slack 等多平台
 </p>
 
 <p align="center">
@@ -72,25 +80,29 @@ python run_bot.py --echo           # 回声测试模式
 
 **run.py (Agent 启动器)**
 
-| 命令 | 模式 | Agent |
-|------|------|-------|
-| `python run.py` | CLI | default |
-| `python run.py --api` | API | default |
-| `python run.py --all-agents` | CLI | 所有 |
-| `python run.py --api --all-agents` | API | 所有 |
+
+| 命令                               | 模式 | Agent   |
+| ---------------------------------- | ---- | ------- |
+| `python run.py`                    | CLI  | default |
+| `python run.py --api`              | API  | default |
+| `python run.py --all-agents`       | CLI  | 所有    |
+| `python run.py --api --all-agents` | API  | 所有    |
 
 **run_bot.py (Bot 网关启动器)**
 
-| 命令 | Bot | CLI | API | Agent |
-|------|-----|-----|-----|-------|
-| `python run_bot.py` | ✅ | ❌ | ❌ | default |
-| `python run_bot.py --cli` | ✅ | ✅ | ❌ | default |
-| `python run_bot.py --api` | ✅ | ❌ | ✅ | default |
-| `python run_bot.py --cli --api` | ✅ | ✅ | ✅ | default |
-| `python run_bot.py --all-agents` | ✅ | ❌ | ❌ | 所有 |
-| `python run_bot.py --all-agents --api` | ✅ | ❌ | ✅ | 所有 |
+
+| 命令                                   | Bot | CLI | API | Agent   |
+| -------------------------------------- | --- | --- | --- | ------- |
+| `python run_bot.py`                    | ✅  | ❌  | ❌  | default |
+| `python run_bot.py --cli`              | ✅  | ✅  | ❌  | default |
+| `python run_bot.py --api`              | ✅  | ❌  | ✅  | default |
+| `python run_bot.py --cli --api`        | ✅  | ✅  | ✅  | default |
+| `python run_bot.py --all-agents`       | ✅  | ❌  | ❌  | 所有    |
+| `python run_bot.py --all-agents --api` | ✅  | ❌  | ✅  | 所有    |
 
 ### Bot 多平台配置
+
+> **模块路径变更**: `agent/bot/` 已重命名为 `agent/server/`，支持 Bot 网关 + HTTP API + 拦截器系统。详见 [GATEWAY_DESIGN.md](./GATEWAY_DESIGN.md)
 
 #### 1. 飞书 (Feishu)
 
@@ -370,6 +382,14 @@ python -m agent.main --cli
 
 ## 使用指南
 
+### 系统提示词配置
+
+系统提示词存放在 `workspace/agents.md` 文件中，可以随时修改：
+
+- 修改后使用 `/reload` 重载生效
+- 支持模板变量：`{workspace_root}`, `{INJECTED_SKILLS_LIST}`, `{INJECTED_SKILLS}`
+- 如果文件不存在，使用内置默认提示词
+
 ### 技能系统
 
 技能目录结构：
@@ -431,6 +451,7 @@ FicusBot 支持多 Agent 架构，允许配置多个专用 Agent 实例，每个
 ```
 
 **关键点：**
+
 - 所有Agent运行在**同一进程内**，非多进程
 - 启动时只创建 default Agent 实例
 - 其他Agent采用**懒加载**模式，首次访问时才创建
@@ -438,12 +459,13 @@ FicusBot 支持多 Agent 架构，允许配置多个专用 Agent 实例，每个
 
 #### 使用场景
 
-| 场景 | 说明 | 配置方式 |
-|------|------|---------|
-| **单Agent模式** | 只使用默认Agent处理所有任务 | `sub_agent_config.enabled: false` |
-| **子代理委托** | 主Agent自动委托任务给专用子Agent | `sub_agent_config.enabled: true` + `sub_agents: ["coder"]` |
-| **手动切换** | 代码中主动获取特定Agent | `AGENT_REGISTRY.get_agent("coder")` |
-| **API多端点** | 不同API端点使用不同Agent | 路由到不同Agent实例 |
+
+| 场景            | 说明                             | 配置方式                                                   |
+| --------------- | -------------------------------- | ---------------------------------------------------------- |
+| **单Agent模式** | 只使用默认Agent处理所有任务      | `sub_agent_config.enabled: false`                          |
+| **子代理委托**  | 主Agent自动委托任务给专用子Agent | `sub_agent_config.enabled: true` + `sub_agents: ["coder"]` |
+| **手动切换**    | 代码中主动获取特定Agent          | `AGENT_REGISTRY.get_agent("coder")`                        |
+| **API多端点**   | 不同API端点使用不同Agent         | 路由到不同Agent实例                                        |
 
 #### 场景一：单Agent模式（推荐入门）
 
@@ -479,12 +501,12 @@ FicusBot 支持多 Agent 架构，允许配置多个专用 Agent 实例，每个
     },
     "coder": {
       "model": "deepseek/deepseek-coder",
-      "tools": ["file.*", "shell.*"],
+      "tools": ["file_*", "shell_*"],
       "system_prompt": "你是代码专家..."
     },
     "researcher": {
       "model": "zai/glm-4.6v",
-      "tools": ["browser.*", "mcp.*"],
+      "tools": ["browser_*", "mcp_*"],
       "system_prompt": "你是研究助手..."
     }
   },
@@ -496,12 +518,13 @@ FicusBot 支持多 Agent 架构，允许配置多个专用 Agent 实例，每个
 ```
 
 **工作流程：**
+
 ```
 用户: "帮我写一个爬虫，并搜索最新的爬虫最佳实践"
 
 default Agent 会：
-1. 调用 agent.coder.delegate → 创建 coder Agent 编写代码
-2. 调用 agent.researcher.delegate → 创建 researcher Agent 搜索信息
+1. 调用 agent_coder_delegate → 创建 coder Agent 编写代码
+2. 调用 agent_researcher_delegate → 创建 researcher Agent 搜索信息
 3. 整合结果返回给用户
 ```
 
@@ -567,7 +590,7 @@ async def default_chat(request: ChatRequest):
       "description": "代码专家Agent，专注于代码编写、审查、调试",
       "model": "deepseek/deepseek-coder",
       "llm_preset": "coder",
-      "tools": ["file.*", "shell.*"],
+      "tools": ["file_*", "shell_*"],
       "skills": ["skill-creator"],
       "system_prompt": "你是一个专业的代码专家，擅长编写高质量代码、代码审查和调试。",
       "max_tool_calls": 10
@@ -576,7 +599,7 @@ async def default_chat(request: ChatRequest):
       "description": "研究Agent，专注于信息搜索和分析",
       "model": "zai/glm-4.6v",
       "llm_preset": "researcher",
-      "tools": ["browser.*", "mcp.*"],
+      "tools": ["browser_*", "mcp_*"],
       "skills": ["exa-web-search-free"],
       "system_prompt": "你是一个专业的研究助手，擅长信息搜索、分析和总结。"
     }
@@ -612,7 +635,7 @@ config = AgentConfig(
     agent_id="temp_analyst",
     description="临时数据分析 Agent",
     model="openai/gpt4o",
-    tools=["file.*", "shell.*"]
+    tools=["file_*", "shell_*"]
 )
 AGENT_REGISTRY.register_agent(config)
 ```
@@ -670,16 +693,18 @@ AGENT_REGISTRY.register_agent(config)
 }
 ```
 
-| 配置项                      | 说明                                           | 默认值       |
-| --------------------------- | ---------------------------------------------- | ------------ |
-| `browser_state_mode`        | 状态提取模式：`interactive`/`minimal`/`full`  | `interactive`|
-| `browser_max_elements`      | 最大返回元素数量 (5-50)                        | `20`         |
-| `browser_prioritize_visible`| 只返回视口可见元素                             | `true`       |
-| `browser_max_text_length`   | 单元素文本最大长度                             | `30`         |
-| `browser_include_page_summary` | 是否包含页面摘要                           | `true`       |
-| `browser_summary_max_length`| 页面摘要最大长度                               | `300`        |
+
+| 配置项                         | 说明                                         | 默认值        |
+| ------------------------------ | -------------------------------------------- | ------------- |
+| `browser_state_mode`           | 状态提取模式：`interactive`/`minimal`/`full` | `interactive` |
+| `browser_max_elements`         | 最大返回元素数量 (5-50)                      | `20`          |
+| `browser_prioritize_visible`   | 只返回视口可见元素                           | `true`        |
+| `browser_max_text_length`      | 单元素文本最大长度                           | `30`          |
+| `browser_include_page_summary` | 是否包含页面摘要                             | `true`        |
+| `browser_summary_max_length`   | 页面摘要最大长度                             | `300`         |
 
 **模式说明**：
+
 - `interactive`：只返回可交互元素（按钮、链接、输入框等），推荐使用，可减少 60-80% Token
 - `minimal`：只返回关键元素（主要导航、主要按钮），最省 Token
 - `full`：返回所有可点击元素，消耗最多 Token
@@ -708,9 +733,10 @@ ficusbot/
 │   ├── storage/        # 会话存储
 │   ├── tui/            # TUI 终端界面
 │   ├── mcp/            # MCP 协议模块
-│   ├── bot/            # 多平台机器人模块
+│   ├── server/         # 统一服务模块（Bot网关 + HTTP API + 拦截器）
 │   └── utils/          # 工具类
 ├── workspace/          # 工作区
+│   ├── agents.md       # 系统提示词配置文件
 │   └── skills/         # 技能目录
 ├── sessions/           # 会话数据
 │   ├── sessions.json   # 会话存储
@@ -735,6 +761,13 @@ ficusbot/
 ## 开发计划
 
 详见 [plan.MD](./plan.MD)
+
+## 最近更新
+
+### 2026-03-02
+- **工具命名规范修改**：将所有工具名称从点号分隔改为下划线分隔，兼容 DeepSeek 等模型
+- **飞书 WebSocket 多进程隔离**：修复 asyncio 事件循环冲突问题
+- **会话记忆同步修复**：解决 `ChatSessionMap` 和 `SessionStorage` 不同步导致的记忆丢失问题
 
 ## License
 

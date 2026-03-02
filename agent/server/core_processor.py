@@ -1,33 +1,36 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :core_processor.py
-# @Time      :2026/02/22
-# @Author    :Ficus
-
 """
 核心处理器模块
 
 功能说明:
     - 处理来自监听器的消息
     - 与 Agent 系统集成，调用 LLM 生成响应
-    - 将响应发送回对应平台
+    - 支持命令处理（/new, /help 等）
+    - 会话持久化映射管理
 
 核心方法:
     - process: 处理 incoming 消息
+    - _handle_command: 处理命令
     - _generate_response: 调用 Agent 生成响应
     - _send_response: 发送响应到消息总线
 
 使用方式:
-    processor = CoreProcessor(bus, agent)
+    processor = CoreProcessor(bus, agent_registry)
     bus.subscribe("incoming", processor.process)
 """
 
-import asyncio
 import re
-from typing import Dict, Any, Optional, Callable, Awaitable
+from typing import Dict, Any, Optional, Callable, Awaitable, TYPE_CHECKING
 from loguru import logger
 
 from .message_bus import MessageBus, UnifiedMessage, OutgoingMessage
+from .command import CommandHandler, CommandContext, CommandResult
+from .session_map import ChatSessionMap, ChatSessionInfo
+
+if TYPE_CHECKING:
+    from agent.registry import AgentRegistry
+    from agent.main import Agent
 
 
 class CoreProcessor:
@@ -39,47 +42,69 @@ class CoreProcessor:
     
     功能说明:
         - 订阅 incoming 事件，处理用户消息
+        - 支持命令处理（/new, /help 等）
+        - 会话持久化映射（chat_id -> session_id）
         - 调用 Agent 生成响应
         - 发布 outgoing 事件，发送响应
     
     核心方法:
         - process: 处理 incoming 消息
-        - set_agent: 设置 Agent 实例
+        - set_agent: 设置默认 Agent 实例
+        - set_agent_registry: 设置 Agent 注册中心
         - add_middleware: 添加消息处理中间件
     
     使用示例:
-        processor = CoreProcessor(bus)
-        processor.set_agent(agent)
+        from agent.registry import AGENT_REGISTRY
+        
+        processor = CoreProcessor(bus, AGENT_REGISTRY)
         bus.subscribe("incoming", processor.process)
     """
     
-    def __init__(self, bus: MessageBus, agent=None):
+    def __init__(self, bus: MessageBus, agent=None, agent_registry: "AgentRegistry" = None):
         """
         初始化核心处理器。
         
-        参数:
+        Args:
             bus: 消息总线实例
-            agent: Agent 实例（可选，后续可通过 set_agent 设置）
+            agent: 默认 Agent 实例（可选，推荐使用 agent_registry）
+            agent_registry: Agent 注册中心（支持多 Agent）
         """
         self.bus = bus
         self._agent = agent
+        self._registry = agent_registry
         self._middlewares: list = []
         self._stats: Dict[str, int] = {
             "processed": 0,
             "responded": 0,
-            "errors": 0
+            "errors": 0,
+            "commands": 0
         }
-        self._session_map: Dict[str, str] = {}
+        
+        self._command_handler = CommandHandler(agent_registry)
+        self._chat_session_map = ChatSessionMap()
+        
+        logger.info("[CoreProcessor] 初始化完成，已加载命令处理器和会话映射")
     
     def set_agent(self, agent) -> None:
         """
-        设置 Agent 实例。
+        设置默认 Agent 实例。
         
-        参数:
+        Args:
             agent: Agent 实例，需实现 chat 方法
         """
         self._agent = agent
-        logger.info("[CoreProcessor] Agent 已设置")
+        logger.info("[CoreProcessor] 默认 Agent 已设置")
+    
+    def set_agent_registry(self, registry: "AgentRegistry") -> None:
+        """
+        设置 Agent 注册中心。
+        
+        Args:
+            registry: Agent 注册中心实例
+        """
+        self._registry = registry
+        self._command_handler._registry = registry
+        logger.info("[CoreProcessor] Agent 注册中心已设置")
     
     def add_middleware(self, middleware: Callable[[UnifiedMessage], Awaitable[Optional[UnifiedMessage]]]) -> None:
         """
@@ -88,7 +113,7 @@ class CoreProcessor:
         中间件可以在消息处理前进行预处理，
         如果返回 None 则跳过该消息。
         
-        参数:
+        Args:
             middleware: 异步中间件函数
         """
         self._middlewares.append(middleware)
@@ -100,10 +125,11 @@ class CoreProcessor:
         处理流程:
             1. 解析消息数据
             2. 执行中间件链
-            3. 生成响应
-            4. 发送响应
+            3. 检查是否为命令
+            4. 生成响应
+            5. 发送响应
         
-        参数:
+        Args:
             data: 消息数据字典
         """
         try:
@@ -116,12 +142,8 @@ class CoreProcessor:
                     return
                 message = result
             
-            # 处理不同类型的消息
-            logger.info(f"[CoreProcessor] 消息类型: {message.type}, 原始内容: {message.content[:50]}...")
-            
             if message.type == "image":
                 logger.info(f"[CoreProcessor] 📷 收到图片消息，准备转发给 Agent 处理")
-                # 对于图片消息，转换为文本提示
                 content = f"[用户发送了一张图片，请回复说：我看到你发送了一张图片，但我目前无法直接查看图片内容。请描述一下图片的内容，或者发送文字消息给我。]"
             elif message.type != "text":
                 logger.debug(f"[CoreProcessor] 跳过非文本消息: type={message.type}")
@@ -131,7 +153,20 @@ class CoreProcessor:
             
             self._stats["processed"] += 1
             
-            # 使用处理后的 content 生成响应
+            cmd_result = self._handle_command(content, message)
+            
+            if cmd_result.is_command:
+                self._stats["commands"] += 1
+                await self._send_response(message, cmd_result.message)
+                self._stats["responded"] += 1
+                
+                if cmd_result.new_session_id:
+                    self._update_session_after_new(message, cmd_result.new_session_id)
+                elif cmd_result.switched_session_id:
+                    self._update_session_after_switch(message, cmd_result.switched_session_id)
+                
+                return
+            
             response = await self._generate_response_with_content(message, content)
             
             if response:
@@ -142,40 +177,104 @@ class CoreProcessor:
             self._stats["errors"] += 1
             logger.error(f"[CoreProcessor] 处理消息失败: {e}")
     
+    def _handle_command(self, content: str, message: UnifiedMessage) -> CommandResult:
+        """
+        处理命令。
+        
+        Args:
+            content: 消息内容
+            message: 统一消息对象
+        
+        Returns:
+            CommandResult: 命令处理结果
+        """
+        chat_key = self._build_chat_key(message)
+        session_info = self._chat_session_map.get(chat_key)
+        
+        context = CommandContext(
+            agent_id=session_info.agent_id if session_info else "default",
+            session_id=session_info.session_id if session_info else None,
+            chat_id=chat_key
+        )
+        
+        return self._command_handler.handle(content, context)
+    
+    def _build_chat_key(self, message: UnifiedMessage) -> str:
+        """
+        构建聊天标识键。
+        
+        格式: listener:chat_id[:thread_id]
+        
+        Args:
+            message: 统一消息对象
+        
+        Returns:
+            str: 聊天标识键
+        """
+        key = f"{message.listener}:{message.chat_id}"
+        if message.thread_id:
+            key = f"{key}:{message.thread_id}"
+        return key
+    
+    def _get_agent(self, agent_id: str = "default") -> Optional["Agent"]:
+        """
+        获取 Agent 实例。
+        
+        优先从注册中心获取，否则返回默认 Agent。
+        
+        Args:
+            agent_id: Agent ID
+        
+        Returns:
+            Agent 实例或 None
+        """
+        if self._registry:
+            try:
+                return self._registry.get_agent(agent_id)
+            except Exception:
+                pass
+        return self._agent
+    
     async def _generate_response_with_content(self, message: UnifiedMessage, content: str) -> Optional[str]:
         """
         使用指定内容调用 Agent 生成响应。
         
-        参数:
+        Args:
             message: 统一格式消息（用于会话管理）
             content: 要发送给 Agent 的内容
         
-        返回:
+        Returns:
             Optional[str]: 响应内容，如果生成失败则返回 None
         """
-        if not self._agent:
+        agent = self._agent
+        if not agent:
             logger.warning("[CoreProcessor] Agent 未设置，返回默认响应")
             return "🤖 系统正在初始化，请稍后再试..."
         
         try:
-            session_key = f"{message.listener}:{message.chat_id}"
+            chat_key = self._build_chat_key(message)
+            agent_id = agent.agent_id if hasattr(agent, 'agent_id') else "default"
             
-            if message.thread_id:
-                session_key = f"{session_key}:{message.thread_id}"
+            session_info = self._chat_session_map.get(chat_key)
+            session_id = session_info.session_id if session_info else None
             
-            if session_key not in self._session_map:
-                if hasattr(self._agent, 'conversation') and hasattr(self._agent.conversation, 'create_new_session'):
-                    session_id = self._agent.conversation.create_new_session()
-                    self._session_map[session_key] = session_id
-                    logger.debug(f"[CoreProcessor] 创建新会话: {session_key} -> {session_id}")
-                else:
-                    self._session_map[session_key] = "default"
-            else:
-                session_id = self._session_map[session_key]
-                if hasattr(self._agent, 'conversation') and hasattr(self._agent.conversation, 'switch_session'):
-                    self._agent.conversation.switch_session(session_id)
+            if hasattr(agent, 'conversation') and hasattr(agent.conversation, 'switch_session'):
+                if session_id:
+                    success = agent.conversation.switch_session(session_id)
+                    if not success:
+                        logger.warning(f"[CoreProcessor] 会话 {session_id} 不存在于存储中，将创建新会话")
+                        session_id = None
+                
+                if not session_id:
+                    new_session_id = agent.conversation.create_new_session()
+                    self._chat_session_map.set_session(
+                        chat_key, 
+                        new_session_id, 
+                        agent_id
+                    )
+                    logger.info(f"[CoreProcessor] 已创建新会话: {new_session_id}, chat_key: {chat_key}")
             
-            result = self._agent.chat(content)
+            result = agent.chat(content)
             
             if isinstance(result, dict):
                 response = result.get("content", "")
@@ -190,16 +289,42 @@ class CoreProcessor:
             logger.error(f"[CoreProcessor] 生成响应失败: {e}")
             import traceback
             logger.error(f"[CoreProcessor] 错误堆栈:\n{traceback.format_exc()}")
-            return None
+            return False
+    
+    def _update_session_after_new(self, message: UnifiedMessage, new_session_id: str) -> None:
+        """
+        创建新会话后更新映射。
+        
+        Args:
+            message: 消息对象
+            new_session_id: 新会话 ID
+        """
+        chat_key = self._build_chat_key(message)
+        agent_id = self._agent.agent_id if self._agent and hasattr(self._agent, 'agent_id') else "default"
+        self._chat_session_map.set_session(chat_key, new_session_id, agent_id)
+        logger.debug(f"[CoreProcessor] 更新会话映射: {chat_key} -> {new_session_id}")
+    
+    def _update_session_after_switch(self, message: UnifiedMessage, switched_session_id: str) -> None:
+        """
+        切换会话后更新映射。
+        
+        Args:
+            message: 消息对象
+            switched_session_id: 切换后的会话 ID
+        """
+        chat_key = self._build_chat_key(message)
+        agent_id = self._agent.agent_id if self._agent and hasattr(self._agent, 'agent_id') else "default"
+        self._chat_session_map.update(chat_key, switched_session_id, agent_id)
+        logger.debug(f"[CoreProcessor] 更新会话映射: {chat_key} -> {switched_session_id}")
     
     async def _generate_response(self, message: UnifiedMessage) -> Optional[str]:
         """
         调用 Agent 生成响应（使用消息原始内容）。
         
-        参数:
+        Args:
             message: 统一格式消息
         
-        返回:
+        Returns:
             Optional[str]: 响应内容，如果生成失败则返回 None
         """
         return await self._generate_response_with_content(message, message.content)
@@ -210,10 +335,10 @@ class CoreProcessor:
         
         移除可能影响消息显示的特殊标记。
         
-        参数:
+        Args:
             response: 原始响应内容
         
-        返回:
+        Returns:
             str: 清理后的响应内容
         """
         response = re.sub(r'\[/?[a-zA-Z][^\]]*\]', '', response)
@@ -224,7 +349,7 @@ class CoreProcessor:
         """
         发送响应到消息总线。
         
-        参数:
+        Args:
             message: 原始消息
             response: 响应内容
         """
@@ -251,6 +376,16 @@ class CoreProcessor:
     def stats(self) -> Dict[str, int]:
         """获取统计信息"""
         return self._stats.copy()
+    
+    @property
+    def command_handler(self) -> CommandHandler:
+        """获取命令处理器"""
+        return self._command_handler
+    
+    @property
+    def chat_session_map(self) -> ChatSessionMap:
+        """获取聊天会话映射"""
+        return self._chat_session_map
 
 
 class EchoProcessor:
@@ -269,7 +404,7 @@ class EchoProcessor:
         """
         初始化回声处理器。
         
-        参数:
+        Args:
             bus: 消息总线实例
         """
         self.bus = bus
@@ -279,7 +414,7 @@ class EchoProcessor:
         """
         处理消息并返回回声。
         
-        参数:
+        Args:
             data: 消息数据字典
         """
         message = UnifiedMessage.from_dict(data)

@@ -9,7 +9,7 @@
 
 功能说明:
     - 管理所有平台监听器的生命周期
-    - 协调消息总线和核心处理器
+    - 协调拦截器链和消息总线
     - 从项目配置加载渠道配置
     - 提供统一的启动/停止接口
 
@@ -18,6 +18,10 @@
     - stop: 停止网关
     - add_listener: 添加监听器
     - get_listener: 获取监听器
+    - use: 添加拦截器
+    - process_incoming: 处理进入消息
+    - process_outgoing: 处理响应消息
+    - mount_http: 挂载 FastAPI 服务
 
 配置来源:
     从 config.json 的 bot.channels 中读取各平台配置
@@ -32,19 +36,21 @@ from .message_bus import MessageBus
 from .base_listener import BaseListener
 from .core_processor import CoreProcessor, EchoProcessor
 from .listeners import get_listener_class
+from .interceptor.base import Interceptor, InterceptResult
+from .interceptor.chain import InterceptorChain
 
 
 class Gateway:
     """
-    机器人网关
+    统一网关
     
-    集中管理所有平台监听器，协调消息传递。
+    协调拦截器链和消息总线，管理所有平台监听器。
     
     功能说明:
-        - 从配置加载并初始化监听器
-        - 管理消息总线和核心处理器
-        - 提供统一的生命周期管理
-        - 支持动态添加/移除监听器
+        - 管理监听器生命周期
+        - 协调拦截器链执行
+        - 协调消息总线传递
+        - 处理拦截响应
     
     核心方法:
         - start: 启动网关
@@ -52,33 +58,200 @@ class Gateway:
         - add_listener: 添加监听器
         - remove_listener: 移除监听器
         - get_listener: 获取监听器
+        - use: 添加拦截器
+        - process_incoming: 处理进入消息
+        - process_outgoing: 处理响应消息
+        - mount_http: 挂载 FastAPI 服务
+    
+    流程:
+        1. 消息进入 → 执行 incoming_chain → 发布到 MessageBus
+        2. 消息处理 → CoreProcessor → 发布到 MessageBus
+        3. 响应发送 → 执行 outgoing_chain → 发送到平台
     
     使用示例:
-        gateway = Gateway()
-        gateway.load_from_config()
-        await gateway.start()
+        gateway = Gateway(agent=agent)
         
-        # 或手动添加监听器
-        gateway = Gateway()
-        gateway.add_listener("telegram", TelegramListener, config)
+        # 链式添加拦截器
+        gateway.use(AuthInterceptor()) \\
+               .use(RateLimitInterceptor()) \\
+               .use(SensitiveWordInterceptor())
+        
+        # 加载监听器
+        gateway.load_from_config()
+        
+        # 启动
         await gateway.start()
     """
     
-    def __init__(self, agent=None, use_echo_processor: bool = False):
+    def __init__(self, agent=None, use_echo_processor: bool = False, agent_registry=None):
         """
         初始化网关。
         
-        参数:
+        Args:
             agent: Agent 实例（用于核心处理器）
             use_echo_processor: 是否使用回声处理器（测试用）
+            agent_registry: Agent 注册中心（支持多 Agent 和命令处理）
         """
+        # 拦截器链（独立于 MessageBus）
+        self.incoming_chain = InterceptorChain()
+        self.outgoing_chain = InterceptorChain()
+        
+        # 消息总线（纯消息传递）
         self.bus = MessageBus()
+        
+        # 监听器管理
         self.listeners: Dict[str, BaseListener] = {}
+        
+        # Agent 和处理器
         self._agent = agent
+        self._agent_registry = agent_registry
         self._use_echo_processor = use_echo_processor
         self._processor = None
+        
+        # 运行状态
         self._running = False
         self._dispatch_task = None
+        self._http_app = None
+    
+    def use(
+        self, 
+        interceptor: Interceptor, 
+        direction: str = "incoming"
+    ) -> "Gateway":
+        """
+        添加拦截器（链式调用）。
+        
+        参数:
+            interceptor: 拦截器实例
+            direction: 拦截方向（incoming / outgoing）
+        
+        返回:
+            Gateway: self
+        """
+        if direction == "incoming":
+            self.incoming_chain.add(interceptor)
+        elif direction == "outgoing":
+            self.outgoing_chain.add(interceptor)
+        else:
+            logger.warning(f"[Gateway] 未知的拦截方向: {direction}")
+        return self
+    
+    def use_all(
+        self, 
+        interceptors: List[Interceptor], 
+        direction: str = "incoming"
+    ) -> "Gateway":
+        """
+        批量添加拦截器。
+        
+        参数:
+            interceptors: 拦截器列表
+            direction: 拦截方向
+        
+        返回:
+            Gateway: self
+        """
+        for interceptor in interceptors:
+            self.use(interceptor, direction)
+        return self
+    
+    async def process_incoming(self, data: dict, source: str) -> bool:
+        """
+        处理进入消息（供 Listener 调用）。
+        
+        流程:
+            1. 执行拦截器链
+            2. 如果拦截，发送响应并返回 False
+            3. 如果通过，发布到 MessageBus
+        
+        参数:
+            data: 消息数据
+            source: 消息来源
+        
+        返回:
+            bool: 是否成功（被拦截返回 False）
+        """
+        # 执行拦截器链
+        result = await self.incoming_chain.execute(data)
+        
+        if not result.passed:
+            # 拦截，发送响应
+            await self._send_intercept_response(data, result, source)
+            return False
+        
+        # 通过，发布到 MessageBus
+        await self.bus.publish("incoming", result.data, source)
+        return True
+    
+    async def process_outgoing(self, data: dict, source: str) -> bool:
+        """
+        处理响应消息（供 CoreProcessor 调用）。
+        
+        流程:
+            1. 执行拦截器链
+            2. 如果拦截，返回 False
+            3. 如果通过，发布到 MessageBus
+        
+        参数:
+            data: 响应数据
+            source: 消息来源
+        
+        返回:
+            bool: 是否成功（被拦截返回 False）
+        """
+        result = await self.outgoing_chain.execute(data)
+        
+        if not result.passed:
+            return False
+        
+        await self.bus.publish("outgoing", result.data, source)
+        return True
+    
+    async def _send_intercept_response(
+        self, 
+        original_data: dict, 
+        result: InterceptResult, 
+        source: str
+    ) -> None:
+        """
+        发送拦截响应。
+        
+        参数:
+            original_data: 原始消息数据
+            result: 拦截结果
+            source: 消息来源
+        """
+        if not result.response:
+            return
+        
+        # Bot 消息：发送 outgoing 事件
+        outgoing = {
+            "listener": original_data.get("listener", ""),
+            "chat_id": original_data.get("chat_id", ""),
+            "content": result.response,
+            "thread_id": original_data.get("thread_id"),
+        }
+        
+        await self.bus.publish("outgoing", outgoing, source="interceptor")
+    
+    def mount_http(self, app=None) -> "Gateway":
+        """
+        挂载 FastAPI 服务。
+        
+        参数:
+            app: FastAPI 应用实例（可选）
+        
+        返回:
+            Gateway: self
+        """
+        from .http.app import create_app
+        
+        if app is None:
+            app = create_app(self)
+        
+        self._http_app = app
+        logger.info("[Gateway] FastAPI 服务已挂载")
+        return self
     
     def load_from_config(self) -> int:
         """
@@ -162,7 +335,12 @@ class Gateway:
         
         return config
     
-    def add_listener(self, name: str, listener_class: Type[BaseListener], config: dict) -> bool:
+    def add_listener(
+        self, 
+        name: str, 
+        listener_class: Type[BaseListener], 
+        config: dict
+    ) -> bool:
         """
         添加监听器。
         
@@ -253,9 +431,9 @@ class Gateway:
                 self.bus.subscribe("incoming", self._processor.process)
                 logger.info("[Gateway] 使用回声处理器（测试模式）")
             else:
-                self._processor = CoreProcessor(self.bus, self._agent)
+                self._processor = CoreProcessor(self.bus, self._agent, self._agent_registry)
                 self.bus.subscribe("incoming", self._processor.process)
-                logger.info("[Gateway] 使用核心处理器")
+                logger.info("[Gateway] 使用核心处理器（已启用命令处理和会话持久化）")
             
             success_count = 0
             for name, listener in self.listeners.items():
@@ -271,9 +449,10 @@ class Gateway:
             
             logger.info(
                 f"[Gateway] 网关已启动, "
-                f"监听器: {success_count}/{len(self.listeners)}"
+                f"监听器: {success_count}/{len(self.listeners)}, "
+                f"拦截器: incoming={self.incoming_chain.count}, outgoing={self.outgoing_chain.count}"
             )
-            return success_count > 0
+            return success_count > 0 or self._http_app is not None
             
         except Exception as e:
             logger.error(f"[Gateway] 网关启动失败: {e}")
@@ -354,7 +533,11 @@ class Gateway:
             "running": self._running,
             "listeners": len(self.listeners),
             "bus_stats": self.bus.stats,
-            "processor_stats": self._processor.stats if self._processor else {}
+            "processor_stats": self._processor.stats if self._processor else {},
+            "interceptors": {
+                "incoming": self.incoming_chain.count,
+                "outgoing": self.outgoing_chain.count,
+            }
         }
     
     def __repr__(self) -> str:

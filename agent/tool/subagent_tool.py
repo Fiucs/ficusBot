@@ -25,8 +25,8 @@ class SubAgentTool:
     
     将子代理封装为工具，主 Agent 可通过工具调用方式委托任务。
     
-    工具命名格式: agent.<agent_id>.delegate
-    例如: agent.coder.delegate
+    工具命名格式: agent_{agent_id}_delegate
+    例如: agent_coder_delegate
     
     Attributes:
         delegation_depth: 当前委托深度
@@ -78,7 +78,7 @@ class SubAgentTool:
             tool = {
                 "type": "function",
                 "function": {
-                    "name": f"agent.{agent_id}.delegate",
+                    "name": f"agent_{agent_id}_delegate",
                     "description": f"委托任务给 {agent_id} Agent。{config.description}",
                     "parameters": {
                         "type": "object",
@@ -109,7 +109,7 @@ class SubAgentTool:
         执行子代理调用（同步版本）
         
         Args:
-            tool_name: 工具名称，格式: agent.<agent_id>.delegate
+            tool_name: 工具名称，格式: agent_{agent_id}_delegate
             arguments: 调用参数
             
         Returns:
@@ -122,7 +122,7 @@ class SubAgentTool:
             logger.warning(f"{Fore.YELLOW}[SubAgentTool] {error_msg}{Style.RESET_ALL}")
             return {"status": "error", "message": error_msg}
         
-        parts = tool_name.split(".")
+        parts = tool_name.split("_")
         if len(parts) < 3 or parts[0] != "agent":
             error_msg = f"错误：无效的工具名称格式: {tool_name}"
             logger.error(f"{Fore.RED}[SubAgentTool] {error_msg}{Style.RESET_ALL}")

@@ -95,8 +95,19 @@ def start_api_server(host: str, port: int):
         port: API 服务监听端口
     """
     import uvicorn
-    from agent.main import app
-    uvicorn.run(app, host=host, port=port)
+    import asyncio
+    from agent.main import get_app
+    
+    # 在后台线程中创建新的事件循环
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    app = get_app()
+    
+    # 使用 Config + Server 方式，避免 asyncio_run 冲突
+    config = uvicorn.Config(app, host=host, port=port, loop=loop)
+    server = uvicorn.Server(config)
+    loop.run_until_complete(server.serve())
 
 
 async def run_bot(
@@ -120,8 +131,9 @@ async def run_bot(
         all_agents: 是否启动所有配置的 Agent
         agents: 指定启动的 Agent ID 列表
     """
-    from agent.bot import Gateway
+    from agent.server import Gateway
     from agent.main import get_agent, start_agents, run_cli
+    from agent.registry import AGENT_REGISTRY
     
     print_banner()
     print_config_info()
@@ -146,8 +158,8 @@ async def run_bot(
             logger.error(f"[Bot] Agent 初始化失败: {e}, 将使用回声模式")
             use_echo = True
     
-    # 创建 Bot 网关
-    gateway = Gateway(agent=agent, use_echo_processor=use_echo)
+    # 创建 Bot 网关（传入 agent_registry 支持命令处理）
+    gateway = Gateway(agent=agent, use_echo_processor=use_echo, agent_registry=AGENT_REGISTRY)
     
     # 从配置文件加载平台监听器
     loaded = gateway.load_from_config()
@@ -159,15 +171,25 @@ async def run_bot(
     
     # 启动 API 服务（后台线程）
     if with_api:
+        from agent.utils.network import get_local_ip
+        
         host = api_host or GLOBAL_CONFIG.get("api.host", "0.0.0.0")
         port = api_port or GLOBAL_CONFIG.get("api.port", 18080)
+        local_ip = get_local_ip()
+        
         api_thread = threading.Thread(
             target=start_api_server,
             args=(host, port),
             daemon=True
         )
         api_thread.start()
-        print(f"{Fore.GREEN}✓ API 服务已启动: http://{host}:{port}{Style.RESET_ALL}")
+        
+        print(f"{Fore.GREEN}✓ API 服务已启动:{Style.RESET_ALL}")
+        print(f"   • 本地访问: http://127.0.0.1:{port}")
+        print(f"   • API 文档: http://127.0.0.1:{port}/docs")
+        if local_ip:
+            print(f"   • 局域网访问: http://{local_ip}:{port}")
+            print(f"   • 局域网文档: http://{local_ip}:{port}/docs")
     
     # 启动 CLI（后台线程）
     if with_cli and agent:

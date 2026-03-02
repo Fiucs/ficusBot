@@ -68,7 +68,7 @@ def main():
     """主入口"""
     args = parse_args()
     from agent.config.configloader import GLOBAL_CONFIG
-    from agent.main import app
+    from agent.main import get_app
     import uvicorn
     
     # 启动指定的 Agent
@@ -88,7 +88,18 @@ def main():
     
     # API 服务模式
     if args.api:
-        print(f"🌐 API 服务模式: http://{host}:{port}")
+        from agent.utils.network import get_local_ip
+        
+        local_ip = get_local_ip()
+        
+        print(f"🌐 API 服务已启动:")
+        print(f"   • 本地访问: http://127.0.0.1:{port}")
+        print(f"   • API 文档: http://127.0.0.1:{port}/docs")
+        if local_ip:
+            print(f"   • 局域网访问: http://{local_ip}:{port}")
+            print(f"   • 局域网文档: http://{local_ip}:{port}/docs")
+        
+        app = get_app()
         uvicorn.run(app, host=host, port=port)
     else:
         # CLI 模式

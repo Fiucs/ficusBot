@@ -28,13 +28,67 @@
 import asyncio
 import json
 import time
-import threading
+import queue
+import multiprocessing
 from typing import Dict, Any
 
 from loguru import logger
 
 from ..base_listener import BaseListener
 from ..message_bus import UnifiedMessage
+
+
+def _run_ws_client_process(app_id: str, app_secret: str, message_queue: multiprocessing.Queue, stop_event: multiprocessing.Event):
+    """
+    在独立进程中运行 WebSocket 客户端。
+    
+    Args:
+        app_id: 飞书应用 ID
+        app_secret: 飞书应用密钥
+        message_queue: 消息队列（用于进程间通信）
+        stop_event: 停止事件（用于进程间通信）
+    """
+    try:
+        from lark_oapi import Client, LogLevel
+        from lark_oapi import ws
+        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        import nest_asyncio
+        nest_asyncio.apply(loop)
+        
+        class MessageHandler:
+            def __init__(self, queue):
+                self.queue = queue
+            
+            def handle(self, event):
+                try:
+                    self.queue.put(event)
+                except Exception as e:
+                    logger.error(f"[LarkWS] 消息入队失败: {e}")
+        
+        event_handler = EventDispatcherHandler.builder("", "") \
+            .register_p2_im_message_receive_v1(lambda event: message_queue.put(event)) \
+            .build()
+        
+        ws_client = ws.Client(
+            app_id=app_id,
+            app_secret=app_secret,
+            log_level=LogLevel.INFO,
+            event_handler=event_handler,
+            auto_reconnect=True
+        )
+        
+        logger.info("[LarkWS] WebSocket 进程已启动")
+        ws_client.start()
+        
+    except Exception as e:
+        if not stop_event.is_set():
+            logger.error(f"[LarkWS] WebSocket 运行错误: {e}")
+            import traceback
+            logger.error(f"[LarkWS] 错误详情:\n{traceback.format_exc()}")
 
 
 class LarkListener(BaseListener):
@@ -70,17 +124,19 @@ class LarkListener(BaseListener):
         """
         初始化飞书监听器。
         
-        参数:
+        Args:
             name: 监听器名称
             config: 配置字典
             bus: 消息总线实例
         """
         super().__init__(name, config, bus)
         self._client = None
-        self._ws_client = None
-        self._ws_thread = None
+        self._ws_process = None
+        self._message_queue = None
+        self._processor_task = None
+        self._main_loop = None
+        self._stop_event = None
         
-        # 获取配置（支持驼峰和下划线命名）
         self._app_id = config.get("app_id") or config.get("appId", "")
         self._app_secret = config.get("app_secret") or config.get("appSecret", "")
     
@@ -88,28 +144,22 @@ class LarkListener(BaseListener):
         """
         启动飞书监听器。
         
-        实现逻辑:
-            1. 初始化 lark-oapi 客户端
-            2. 启动 WebSocket 长连接
-            3. 订阅 outgoing 事件
-        
-        返回:
+        Returns:
             bool: 启动是否成功
         """
         try:
             from lark_oapi import Client, LogLevel
-            from lark_oapi import ws
-            from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
             
             if not self._app_id or not self._app_secret:
                 logger.error(f"[{self.name}] 缺少 app_id/appId 或 app_secret/appSecret 配置")
                 return False
             
+            self._main_loop = asyncio.get_running_loop()
+            
             logger.info(f"[{self.name}] 正在初始化飞书客户端...")
             logger.info(f"[{self.name}] App ID: {self._app_id}")
             logger.info(f"[{self.name}] App Secret: {self._app_secret[:8]}...{self._app_secret[-4:]}")
             
-            # 初始化客户端
             self._client = Client.builder() \
                 .app_id(self._app_id) \
                 .app_secret(self._app_secret) \
@@ -118,32 +168,19 @@ class LarkListener(BaseListener):
             
             logger.info(f"[{self.name}] 飞书客户端初始化成功")
             
-            # 创建事件处理器
-            event_handler = EventDispatcherHandler.builder("", "") \
-                .register_p2_im_message_receive_v1(self._handle_ws_message) \
-                .build()
+            self._message_queue = multiprocessing.Queue()
+            self._stop_event = multiprocessing.Event()
             
-            # 创建 WebSocket 客户端
-            self._ws_client = ws.Client(
-                app_id=self._app_id,
-                app_secret=self._app_secret,
-                log_level=LogLevel.INFO,
-                event_handler=event_handler,
-                auto_reconnect=True
-            )
-            
-            # 在后台线程启动 WebSocket
-            self._ws_thread = threading.Thread(
-                target=self._run_ws_client,
+            self._ws_process = multiprocessing.Process(
+                target=_run_ws_client_process,
+                args=(self._app_id, self._app_secret, self._message_queue, self._stop_event),
                 daemon=True,
                 name=f"FeishuWS_{self.name}"
             )
-            self._ws_thread.start()
+            self._ws_process.start()
             
-            # 等待连接建立
-            await asyncio.sleep(2)
+            self._processor_task = asyncio.create_task(self._process_message_queue())
             
-            # 订阅 outgoing 事件
             self.bus.subscribe("outgoing", self._handle_outgoing)
             
             self._running = True
@@ -151,7 +188,7 @@ class LarkListener(BaseListener):
             logger.info(f"[{self.name}] ═════════════════════════════════════════")
             logger.info(f"[{self.name}] 🎉 飞书监听器启动成功")
             logger.info(f"[{self.name}] 📱 App ID: {self._app_id}")
-            logger.info(f"[{self.name}] 🔌 连接模式: WebSocket 长连接")
+            logger.info(f"[{self.name}] 🔌 连接模式: WebSocket 长连接（独立进程）")
             logger.info(f"[{self.name}] ═════════════════════════════════════════")
             
             return True
@@ -165,56 +202,30 @@ class LarkListener(BaseListener):
             logger.error(f"[{self.name}] 错误堆栈:\n{traceback.format_exc()}")
             return False
     
-    def _run_ws_client(self):
-        """在后台线程运行 WebSocket 客户端。"""
-        try:
-            logger.info(f"[{self.name}] WebSocket 连接线程已启动")
-            # 创建新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            # 运行客户端
-            self._ws_client.start()
-        except Exception as e:
-            logger.error(f"[{self.name}] WebSocket 运行错误: {e}")
-            import traceback
-            logger.error(f"[{self.name}] 错误详情:\n{traceback.format_exc()}")
-    
-    def _handle_ws_message(self, event):
-        """
-        处理 WebSocket 接收到的消息事件。
-        
-        参数:
-            event: 飞书消息事件 (P2ImMessageReceiveV1 对象)
-        """
-        logger.info(f"[{self.name}] 📨 收到 WebSocket 消息")
-        
-        # 在新线程中处理以避免阻塞 WebSocket
-        thread = threading.Thread(
-            target=self._process_event_in_thread,
-            args=(event,),
-            daemon=True
-        )
-        thread.start()
-    
-    def _process_event_in_thread(self, event):
-        """在新线程中处理事件。"""
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._process_sdk_event(event))
-            loop.close()
-        except Exception as e:
-            logger.error(f"[{self.name}] 处理消息线程错误: {e}")
+    async def _process_message_queue(self):
+        """处理消息队列（在主事件循环中运行）。"""
+        while self._running:
+            try:
+                event = await asyncio.get_running_loop().run_in_executor(
+                    None, 
+                    self._message_queue.get, 
+                    True, 
+                    1.0
+                )
+                await self._process_sdk_event(event)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"[{self.name}] 处理消息队列错误: {e}")
     
     async def _process_sdk_event(self, event) -> None:
         """
         处理 SDK 事件对象。
         
-        参数:
+        Args:
             event: 飞书 SDK 事件对象
         """
         try:
-            # 提取事件数据
             event_data = event.event if hasattr(event, 'event') else event
             message = event_data.message if hasattr(event_data, 'message') else None
             sender = event_data.sender if hasattr(event_data, 'sender') else None
@@ -224,7 +235,6 @@ class LarkListener(BaseListener):
                 logger.warning(f"[{self.name}] 事件没有 message 属性")
                 return
             
-            # 构造统一格式的消息数据
             formatted_data = {
                 "schema": "2.0",
                 "header": {
@@ -256,7 +266,6 @@ class LarkListener(BaseListener):
             logger.info(f"[{self.name}] ✅ 消息格式化成功")
             logger.info(f"[{self.name}] 📨 来自 {formatted_data['event']['sender']['sender_id']['open_id']}")
             
-            # 发布消息到消息总线
             await self._publish_incoming(formatted_data)
             
         except Exception as e:
@@ -268,7 +277,7 @@ class LarkListener(BaseListener):
         """
         停止飞书监听器。
         
-        返回:
+        Returns:
             bool: 停止是否成功
         """
         try:
@@ -276,11 +285,19 @@ class LarkListener(BaseListener):
             
             logger.info(f"[{self.name}] 正在停止...")
             
-            # WebSocket 客户端会在后台线程中自动关闭
-            if self._ws_client:
-                # SDK 的 WebSocket 客户端没有显式关闭方法
-                # 依赖线程结束和自动重连机制的停止
-                pass
+            if self._processor_task:
+                self._processor_task.cancel()
+                try:
+                    await self._processor_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if self._stop_event:
+                self._stop_event.set()
+            
+            if self._ws_process and self._ws_process.is_alive():
+                self._ws_process.terminate()
+                self._ws_process.join(timeout=2)
             
             await self._cancel_all_tasks()
             
@@ -295,12 +312,12 @@ class LarkListener(BaseListener):
         """
         发送消息到飞书。
         
-        参数:
+        Args:
             target: 目标信息字典，包含 chat_id
             content: 消息内容
             **kwargs: 其他参数
         
-        返回:
+        Returns:
             Dict: 发送结果
         """
         try:
@@ -313,7 +330,6 @@ class LarkListener(BaseListener):
             
             msg_type = "text"
             
-            # 构造请求
             request = im.CreateMessageRequest.builder() \
                 .receive_id_type("chat_id") \
                 .request_body(
@@ -325,8 +341,9 @@ class LarkListener(BaseListener):
                 ) \
                 .build()
             
-            # 发送消息
-            response = await asyncio.to_thread(
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
                 self._client.im.v1.message.create,
                 request
             )
@@ -346,7 +363,7 @@ class LarkListener(BaseListener):
         """
         处理 outgoing 事件。
         
-        参数:
+        Args:
             data: 发送消息数据字典
         """
         if data.get("listener") != self.name:
@@ -362,10 +379,10 @@ class LarkListener(BaseListener):
         """
         将飞书消息转换为统一格式。
         
-        参数:
+        Args:
             raw: 飞书事件推送的 JSON 数据
         
-        返回:
+        Returns:
             UnifiedMessage: 统一格式消息
         """
         event = raw.get("event", {})
@@ -376,7 +393,6 @@ class LarkListener(BaseListener):
         message_type = message.get("message_type", "text")
         content_raw = message.get("content", "{}")
         
-        # 解析消息内容
         content = ""
         try:
             if isinstance(content_raw, str):
@@ -399,7 +415,6 @@ class LarkListener(BaseListener):
         except json.JSONDecodeError:
             content = content_raw if isinstance(content_raw, str) else str(content_raw)
         
-        # 处理时间戳
         create_time = message.get("create_time", 0)
         try:
             if isinstance(create_time, str):
@@ -425,10 +440,10 @@ class LarkListener(BaseListener):
         """
         提取富文本消息内容。
         
-        参数:
+        Args:
             content_data: 富文本内容数据
         
-        返回:
+        Returns:
             str: 提取的文本内容
         """
         text_parts = []
