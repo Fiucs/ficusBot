@@ -647,11 +647,37 @@ AGENT_REGISTRY.register_agent(config)
   "workspace_root": "./workspace",
   "file_allow_list": ["./workspace"],
   "llm": {
+    "global": {
+      "temperature": 0.3,
+      "max_tokens": 8096,
+      "context_window": 128000,
+      "timeout": 60,
+      "drop_params": true
+    },
     "default_model": "openai/gpt35",
     "providers": {
-      "openai": {"api_key": "your-key"},
-      "tongyi": {"api_key": "your-key"},
-      "ollama": {"api_key": "ollama", "api_base": "http://localhost:11434/v1"}
+      "openai": {
+        "api_key": "your-key",
+        "models": {
+          "gpt35": {
+            "model_name": "gpt-3.5-turbo",
+            "remark": "OpenAI GPT-3.5"
+          }
+        }
+      },
+      "zai": {
+        "api_key": "your-key",
+        "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "models": {
+          "glm-4.6v": {
+            "remark": "智谱 GLM-4.6V",
+            "stream": true,
+            "thinking": {
+              "type": "enabled"
+            }
+          }
+        }
+      }
     }
   },
   "session": {
@@ -667,6 +693,172 @@ AGENT_REGISTRY.register_agent(config)
   }
 }
 ```
+
+### 模型参数配置
+
+模型参数支持**四层配置**，优先级从高到低：
+
+| 层级 | 配置位置 | 说明 |
+|------|---------|------|
+| 1. 预设级别 | `llm.agent_presets.{preset_name}` | Agent 专用预设，最高优先级 |
+| 2. 模型级别 | `llm.providers.{vendor}.models.{model}` | 针对特定模型 |
+| 3. 厂商级别 | `llm.providers.{vendor}` | 针对厂商下所有模型 |
+| 4. 全局级别 | `llm.global` | 默认值，所有模型继承 |
+
+**配置合并顺序**：`global` → `provider` → `model` → `preset`，后者覆盖前者。
+
+**支持的参数**：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `temperature` | float | 0.3 | 控制输出随机性 (0-1)，0=确定性，1=创造性 |
+| `max_tokens` | int | 8096 | 单次回复最大 token 数 |
+| `context_window` | int | 128000 | 模型上下文窗口大小（输入+输出总容量） |
+| `timeout` | int | 60 | API 请求超时时间（秒） |
+| `stream` | bool | false | 是否启用流式输出 |
+| `drop_params` | bool | true | 是否自动丢弃模型不支持的参数 |
+| `thinking` | object | - | 思考模式配置（部分模型支持） |
+
+### thinking 参数详解
+
+`thinking` 参数用于启用模型的深度思考/推理模式，不同厂商有不同的参数格式：
+
+| 厂商 | 参数格式 | 配置示例 |
+|------|---------|---------|
+| **智谱 GLM** | `extra_body.thinking` | `{"enabled": true}` |
+| **DeepSeek** | `extra_body.thinking` | `{"enabled": true}` |
+| **豆包/火山** | `extra_body.thinking` | `{"enabled": true}` |
+| **阿里千问** | `extra_body.enable_thinking` | `true` |
+| **LM Studio** | `extra_body.enable_thinking` | `true` |
+| **Gemini** | `thinking_budget` | `1024` (token数) |
+| **Claude** | 顶层 `thinking` | `{"type": "enabled", "budget_tokens": 1024}` |
+| **OpenAI o系列** | `reasoning_effort` | `"low"` / `"medium"` / `"high"` |
+
+**配置示例**：
+
+```json
+{
+  "llm": {
+    "global": {
+      "temperature": 0.3,
+      "max_tokens": 8096,
+      "context_window": 128000,
+      "timeout": 60,
+      "drop_params": true
+    },
+    "agent_presets": {
+      "coder": {
+        "temperature": 0.5,
+        "max_tokens": 16000,
+        "timeout": 120
+      },
+      "researcher": {
+        "temperature": 0.2,
+        "max_tokens": 12000
+      }
+    },
+    "providers": {
+      "zai": {
+        "api_key": "your-key",
+        "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "models": {
+          "glm-4.6v": {
+            "model_name": "glm-4.6v",
+            "remark": "智谱 GLM-4.6V 深度思考模型",
+            "stream": true,
+            "thinking": {
+              "enabled": true
+            }
+          },
+          "glm-4.7": {
+            "model_name": "glm-4.7",
+            "remark": "智谱 GLM-4.7",
+            "max_tokens": 16000
+          }
+        }
+      },
+      "deepseek": {
+        "api_key": "your-key",
+        "models": {
+          "deepseek-reasoner": {
+            "model_name": "deepseek-reasoner",
+            "remark": "DeepSeek 深度推理模型",
+            "thinking": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      "anthropic": {
+        "api_key": "your-key",
+        "models": {
+          "claude-3-7-sonnet": {
+            "model_name": "claude-3-7-sonnet-20250219",
+            "thinking": {
+              "enabled": true,
+              "mode": "thinking",
+              "budget_tokens": 1024
+            }
+          }
+        }
+      },
+      "gemini": {
+        "api_key": "your-key",
+        "models": {
+          "gemini-2.5-pro": {
+            "model_name": "gemini-2.5-pro-preview-05-06",
+            "thinking": {
+              "enabled": true,
+              "budget_tokens": 2048
+            }
+          }
+        }
+      },
+      "openai": {
+        "api_key": "your-key",
+        "models": {
+          "o1-mini": {
+            "model_name": "o1-mini",
+            "thinking": {
+              "mode": "reasoning_effort",
+              "effort": "medium"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+> **⚠️ LM Studio 需先在设置中开启**：「Settings → Developer → Separate reasoning_content and content in API responses」
+
+### Agent LLM 预设参数
+
+Agent 可以通过 `llm_preset` 引用预设参数，实现不同 Agent 使用不同的 LLM 配置：
+
+```json
+{
+  "agents": {
+    "coder": {
+      "model": "deepseek/deepseek-coder",
+      "llm_preset": "coder",
+      "tools": ["file_*", "shell_*"]
+    }
+  },
+  "llm": {
+    "agent_presets": {
+      "coder": {
+        "temperature": 0.5,
+        "max_tokens": 16000,
+        "timeout": 120
+      }
+    }
+  }
+}
+```
+
+**优先级**：`llm_preset` > `模型配置` > `厂商配置` > `全局配置`
 
 ### 安全配置
 
@@ -733,7 +925,26 @@ ficusbot/
 │   ├── storage/        # 会话存储
 │   ├── tui/            # TUI 终端界面
 │   ├── mcp/            # MCP 协议模块
-│   ├── server/         # 统一服务模块（Bot网关 + HTTP API + 拦截器）
+│   ├── server/         # 统一服务模块
+│   │   ├── gateway.py          # 统一网关
+│   │   ├── bot/                # Bot 子模块
+│   │   │   ├── message_bus.py      # 消息总线
+│   │   │   ├── base_listener.py    # 监听器基类
+│   │   │   ├── core_processor.py   # 核心处理器
+│   │   │   ├── chat_session_map.py # 会话映射
+│   │   │   └── listeners/          # 平台监听器
+│   │   ├── command/            # 命令处理模块
+│   │   │   ├── command_handler.py  # 命令处理器
+│   │   │   ├── command_context.py  # 命令上下文
+│   │   │   └── command_result.py   # 命令结果
+│   │   ├── interceptor/        # 拦截器系统
+│   │   │   ├── base.py             # 拦截器基类
+│   │   │   ├── interceptor_chain.py# 拦截器链
+│   │   │   └── builtins/           # 内置拦截器
+│   │   └── http/              # HTTP API 模块
+│   │       ├── app.py              # FastAPI 应用
+│   │       ├── http_result.py      # 统一响应格式
+│   │       └── routes/             # API 路由
 │   └── utils/          # 工具类
 ├── workspace/          # 工作区
 │   ├── agents.md       # 系统提示词配置文件
@@ -758,13 +969,44 @@ ficusbot/
 - [MCP 协议模块](./DOCS.MD#11-mcp-model-context-protocol-模块)
 - [Bot 多平台适配器](./DOCS.MD#12-bot-多平台适配器模块)
 
-## 开发计划
+## 已完成功能
 
-详见 [plan.MD](./plan.MD)
+- [ ]  ✅ 多模型支持（OpenAI、通义千问、Ollama 本地模型）
+- [ ]  ✅ 多 Agent 架构（子代理委托、懒加载）
+- [ ]  ✅ ReAct 提示词框架 + 系统提示词外部化
+- [ ]  ✅ 会话持久化（TinyDB）+ 日志系统（loguru）
+- [ ]  ✅ 文件系统工具（读、写、删、搜索等）
+- [ ]  ✅ Shell 命令执行（白名单/黑名单保护）
+- [ ]  ✅ 技能系统（Markdown 格式定义）
+- [ ]  ✅ MCP 协议支持 + 浏览器自动化（browser-use）
+- [ ]  ✅ 多平台 Bot 网关（Telegram、飞书、Discord、QQ、企业微信、钉钉、Slack）
+- [ ]  ✅ Bot 命令系统（`/help`、`/new`、`/sessions`、`/clear`、`/models`、`/switch`、`/reload`）
+- [ ]  ✅ HTTP API 模块（FastAPI）+ 拦截器系统（权限验证、限流、敏感词过滤）
+- [ ]  ✅ 安全控制（文件/Shell/路径 白名单黑名单）
+- [ ]  长记忆对话，工具使用
+- [ ]  视觉化操作 Agent S3或者 [UI-TARS-desktop](https://github.com/bytedance/UI-TARS-desktop)
+- [ ]  web UI 界面
+
+详细开发计划请参阅 [plan.MD](./plan.MD)
 
 ## 最近更新
 
+### 2026-03-04
+
+- **模型参数配置文档更新**：完善四层配置优先级说明（预设 > 模型 > 厂商 > 全局）
+- **thinking 参数详解**：新增各厂商 thinking 参数格式对照表，包括智谱GLM、DeepSeek、豆包、千问、Gemini、Claude、OpenAI o系列等
+- **Agent LLM 预设参数**：新增 `llm.agent_presets` 配置说明，支持不同 Agent 使用不同的 LLM 参数
+
+### 2026-03-03
+
+- **统一 API 响应格式**：新增 `HttpResult` 类，所有 HTTP API 响应统一为 `{success, message, data}` 格式
+- **修复 /models 命令**：返回所有配置的模型列表，并标记当前使用的模型
+- **修复 /help 命令**：返回的命令列表添加 `/` 前缀
+- **修复 /clear 命令**：修正方法调用错误
+- **文件重命名**：`response.py` → `result.py`，`ApiResponse` → `HttpResult`，使命名风格统一
+
 ### 2026-03-02
+
 - **工具命名规范修改**：将所有工具名称从点号分隔改为下划线分隔，兼容 DeepSeek 等模型
 - **飞书 WebSocket 多进程隔离**：修复 asyncio 事件循环冲突问题
 - **会话记忆同步修复**：解决 `ChatSessionMap` 和 `SessionStorage` 不同步导致的记忆丢失问题

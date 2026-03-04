@@ -8,16 +8,6 @@
     - 与 Agent 系统集成，调用 LLM 生成响应
     - 支持命令处理（/new, /help 等）
     - 会话持久化映射管理
-
-核心方法:
-    - process: 处理 incoming 消息
-    - _handle_command: 处理命令
-    - _generate_response: 调用 Agent 生成响应
-    - _send_response: 发送响应到消息总线
-
-使用方式:
-    processor = CoreProcessor(bus, agent_registry)
-    bus.subscribe("incoming", processor.process)
 """
 
 import re
@@ -25,8 +15,8 @@ from typing import Dict, Any, Optional, Callable, Awaitable, TYPE_CHECKING
 from loguru import logger
 
 from .message_bus import MessageBus, UnifiedMessage, OutgoingMessage
-from .command import CommandHandler, CommandContext, CommandResult
-from .session_map import ChatSessionMap, ChatSessionInfo
+from ..command import CommandHandler, CommandContext, CommandResult
+from .chat_session_map import ChatSessionMap, ChatSessionInfo
 
 if TYPE_CHECKING:
     from agent.registry import AgentRegistry
@@ -39,36 +29,9 @@ class CoreProcessor:
     
     处理来自各平台监听器的消息，调用 Agent 生成响应，
     并将响应发送回对应平台。
-    
-    功能说明:
-        - 订阅 incoming 事件，处理用户消息
-        - 支持命令处理（/new, /help 等）
-        - 会话持久化映射（chat_id -> session_id）
-        - 调用 Agent 生成响应
-        - 发布 outgoing 事件，发送响应
-    
-    核心方法:
-        - process: 处理 incoming 消息
-        - set_agent: 设置默认 Agent 实例
-        - set_agent_registry: 设置 Agent 注册中心
-        - add_middleware: 添加消息处理中间件
-    
-    使用示例:
-        from agent.registry import AGENT_REGISTRY
-        
-        processor = CoreProcessor(bus, AGENT_REGISTRY)
-        bus.subscribe("incoming", processor.process)
     """
     
     def __init__(self, bus: MessageBus, agent=None, agent_registry: "AgentRegistry" = None):
-        """
-        初始化核心处理器。
-        
-        Args:
-            bus: 消息总线实例
-            agent: 默认 Agent 实例（可选，推荐使用 agent_registry）
-            agent_registry: Agent 注册中心（支持多 Agent）
-        """
         self.bus = bus
         self._agent = agent
         self._registry = agent_registry
@@ -86,52 +49,22 @@ class CoreProcessor:
         logger.info("[CoreProcessor] 初始化完成，已加载命令处理器和会话映射")
     
     def set_agent(self, agent) -> None:
-        """
-        设置默认 Agent 实例。
-        
-        Args:
-            agent: Agent 实例，需实现 chat 方法
-        """
+        """设置默认 Agent 实例"""
         self._agent = agent
         logger.info("[CoreProcessor] 默认 Agent 已设置")
     
     def set_agent_registry(self, registry: "AgentRegistry") -> None:
-        """
-        设置 Agent 注册中心。
-        
-        Args:
-            registry: Agent 注册中心实例
-        """
+        """设置 Agent 注册中心"""
         self._registry = registry
         self._command_handler._registry = registry
         logger.info("[CoreProcessor] Agent 注册中心已设置")
     
     def add_middleware(self, middleware: Callable[[UnifiedMessage], Awaitable[Optional[UnifiedMessage]]]) -> None:
-        """
-        添加消息处理中间件。
-        
-        中间件可以在消息处理前进行预处理，
-        如果返回 None 则跳过该消息。
-        
-        Args:
-            middleware: 异步中间件函数
-        """
+        """添加消息处理中间件"""
         self._middlewares.append(middleware)
     
     async def process(self, data: dict) -> None:
-        """
-        处理 incoming 消息。
-        
-        处理流程:
-            1. 解析消息数据
-            2. 执行中间件链
-            3. 检查是否为命令
-            4. 生成响应
-            5. 发送响应
-        
-        Args:
-            data: 消息数据字典
-        """
+        """处理 incoming 消息"""
         try:
             message = UnifiedMessage.from_dict(data)
             
@@ -178,16 +111,7 @@ class CoreProcessor:
             logger.error(f"[CoreProcessor] 处理消息失败: {e}")
     
     def _handle_command(self, content: str, message: UnifiedMessage) -> CommandResult:
-        """
-        处理命令。
-        
-        Args:
-            content: 消息内容
-            message: 统一消息对象
-        
-        Returns:
-            CommandResult: 命令处理结果
-        """
+        """处理命令"""
         chat_key = self._build_chat_key(message)
         session_info = self._chat_session_map.get(chat_key)
         
@@ -200,34 +124,14 @@ class CoreProcessor:
         return self._command_handler.handle(content, context)
     
     def _build_chat_key(self, message: UnifiedMessage) -> str:
-        """
-        构建聊天标识键。
-        
-        格式: listener:chat_id[:thread_id]
-        
-        Args:
-            message: 统一消息对象
-        
-        Returns:
-            str: 聊天标识键
-        """
+        """构建聊天标识键"""
         key = f"{message.listener}:{message.chat_id}"
         if message.thread_id:
             key = f"{key}:{message.thread_id}"
         return key
     
     def _get_agent(self, agent_id: str = "default") -> Optional["Agent"]:
-        """
-        获取 Agent 实例。
-        
-        优先从注册中心获取，否则返回默认 Agent。
-        
-        Args:
-            agent_id: Agent ID
-        
-        Returns:
-            Agent 实例或 None
-        """
+        """获取 Agent 实例"""
         if self._registry:
             try:
                 return self._registry.get_agent(agent_id)
@@ -236,16 +140,7 @@ class CoreProcessor:
         return self._agent
     
     async def _generate_response_with_content(self, message: UnifiedMessage, content: str) -> Optional[str]:
-        """
-        使用指定内容调用 Agent 生成响应。
-        
-        Args:
-            message: 统一格式消息（用于会话管理）
-            content: 要发送给 Agent 的内容
-        
-        Returns:
-            Optional[str]: 响应内容，如果生成失败则返回 None
-        """
+        """使用指定内容调用 Agent 生成响应"""
         agent = self._agent
         if not agent:
             logger.warning("[CoreProcessor] Agent 未设置，返回默认响应")
@@ -289,70 +184,33 @@ class CoreProcessor:
             logger.error(f"[CoreProcessor] 生成响应失败: {e}")
             import traceback
             logger.error(f"[CoreProcessor] 错误堆栈:\n{traceback.format_exc()}")
-            return False
+            return None
     
     def _update_session_after_new(self, message: UnifiedMessage, new_session_id: str) -> None:
-        """
-        创建新会话后更新映射。
-        
-        Args:
-            message: 消息对象
-            new_session_id: 新会话 ID
-        """
+        """创建新会话后更新映射"""
         chat_key = self._build_chat_key(message)
         agent_id = self._agent.agent_id if self._agent and hasattr(self._agent, 'agent_id') else "default"
         self._chat_session_map.set_session(chat_key, new_session_id, agent_id)
         logger.debug(f"[CoreProcessor] 更新会话映射: {chat_key} -> {new_session_id}")
     
     def _update_session_after_switch(self, message: UnifiedMessage, switched_session_id: str) -> None:
-        """
-        切换会话后更新映射。
-        
-        Args:
-            message: 消息对象
-            switched_session_id: 切换后的会话 ID
-        """
+        """切换会话后更新映射"""
         chat_key = self._build_chat_key(message)
         agent_id = self._agent.agent_id if self._agent and hasattr(self._agent, 'agent_id') else "default"
         self._chat_session_map.update(chat_key, switched_session_id, agent_id)
         logger.debug(f"[CoreProcessor] 更新会话映射: {chat_key} -> {switched_session_id}")
     
     async def _generate_response(self, message: UnifiedMessage) -> Optional[str]:
-        """
-        调用 Agent 生成响应（使用消息原始内容）。
-        
-        Args:
-            message: 统一格式消息
-        
-        Returns:
-            Optional[str]: 响应内容，如果生成失败则返回 None
-        """
+        """调用 Agent 生成响应（使用消息原始内容）"""
         return await self._generate_response_with_content(message, message.content)
     
     def _clean_response(self, response: str) -> str:
-        """
-        清理响应内容。
-        
-        移除可能影响消息显示的特殊标记。
-        
-        Args:
-            response: 原始响应内容
-        
-        Returns:
-            str: 清理后的响应内容
-        """
+        """清理响应内容"""
         response = re.sub(r'\[/?[a-zA-Z][^\]]*\]', '', response)
-        
         return response.strip()
     
     async def _send_response(self, message: UnifiedMessage, response: str) -> None:
-        """
-        发送响应到消息总线。
-        
-        Args:
-            message: 原始消息
-            response: 响应内容
-        """
+        """发送响应到消息总线"""
         outgoing = OutgoingMessage(
             listener=message.listener,
             chat_id=message.chat_id,
@@ -393,30 +251,14 @@ class EchoProcessor:
     回声处理器
     
     简单的测试处理器，将收到的消息原样返回。
-    用于测试网关功能，无需 Agent。
-    
-    使用示例:
-        processor = EchoProcessor(bus)
-        bus.subscribe("incoming", processor.process)
     """
     
     def __init__(self, bus: MessageBus):
-        """
-        初始化回声处理器。
-        
-        Args:
-            bus: 消息总线实例
-        """
         self.bus = bus
         self._stats = {"processed": 0}
     
     async def process(self, data: dict) -> None:
-        """
-        处理消息并返回回声。
-        
-        Args:
-            data: 消息数据字典
-        """
+        """处理消息并返回回声"""
         message = UnifiedMessage.from_dict(data)
         
         if message.type != "text":

@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :rate_limit.py
-# @Time      :2026/03/02
-# @Author    :Ficus
-
 """
 限流拦截器模块
 
@@ -16,6 +12,7 @@
 """
 
 import time
+from loguru import logger
 from ..base import Interceptor, InterceptResult
 
 
@@ -48,16 +45,15 @@ class RateLimitInterceptor(Interceptor):
         """
         self.max_requests = max_requests
         self.window = window
-        self._request_counts: dict = {}  # user_id -> [timestamps]
+        self._request_counts: dict = {}
+        logger.debug(
+            f"[{self.name}] 初始化 | 最大请求: {max_requests}/次 | "
+            f"时间窗口: {window}秒"
+        )
     
     @property
     def name(self) -> str:
-        """
-        拦截器名称。
-        
-        返回:
-            str: "rate_limit"
-        """
+        """拦截器名称"""
         return "rate_limit"
     
     async def intercept(self, data: dict) -> InterceptResult:
@@ -73,6 +69,7 @@ class RateLimitInterceptor(Interceptor):
             InterceptResult: 限流检查结果
         """
         user_id = data.get("user_id", "anonymous")
+        platform = data.get("platform", "unknown")
         now = time.time()
         
         # 初始化或清理过期记录
@@ -85,10 +82,16 @@ class RateLimitInterceptor(Interceptor):
             if now - t < self.window
         ]
         
+        current_count = len(self._request_counts[user_id])
+        
         # 检查是否超限
-        if len(self._request_counts[user_id]) >= self.max_requests:
+        if current_count >= self.max_requests:
             retry_after = int(
                 self.window - (now - self._request_counts[user_id][0])
+            )
+            logger.info(
+                f"[{self.name}] 拦截 | 平台: {platform} | "
+                f"用户: {user_id} | 原因: 请求超限 ({current_count}/{self.max_requests})"
             )
             return InterceptResult.reject(
                 response=f"⏳ 请求过于频繁，请 {retry_after} 秒后再试",

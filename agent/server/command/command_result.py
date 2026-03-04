@@ -25,29 +25,6 @@ class CommandResult:
         data: 额外数据（如会话列表、模型列表等）
         new_session_id: 新创建的会话 ID（用于 /new 命令）
         switched_session_id: 切换后的会话 ID（用于 /session 命令）
-    
-    使用示例:
-        # 是命令，执行成功
-        result = CommandResult(
-            success=True,
-            message="已创建新会话",
-            is_command=True,
-            new_session_id="sess_xxx"
-        )
-        
-        # 不是命令
-        result = CommandResult(
-            success=True,
-            message="",
-            is_command=False
-        )
-        
-        # 命令执行失败
-        result = CommandResult(
-            success=False,
-            message="未知命令: /xxx",
-            is_command=True
-        )
     """
     
     success: bool = True
@@ -60,31 +37,17 @@ class CommandResult:
     @classmethod
     def not_a_command(cls) -> "CommandResult":
         """创建"不是命令"的结果"""
-        return cls(
-            success=True,
-            message="",
-            is_command=False
-        )
+        return cls(success=True, message="", is_command=False)
     
     @classmethod
     def success_result(cls, message: str, **kwargs) -> "CommandResult":
         """创建成功结果"""
-        return cls(
-            success=True,
-            message=message,
-            is_command=True,
-            **kwargs
-        )
+        return cls(success=True, message=message, is_command=True, **kwargs)
     
     @classmethod
     def error_result(cls, message: str, **kwargs) -> "CommandResult":
         """创建错误结果"""
-        return cls(
-            success=False,
-            message=message,
-            is_command=True,
-            **kwargs
-        )
+        return cls(success=False, message=message, is_command=True, **kwargs)
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""

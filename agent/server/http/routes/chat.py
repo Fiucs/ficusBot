@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :chat.py
-# @Time      :2026/03/02
-# @Author    :Ficus
-
 """
 聊天和工具 API 路由模块
 
@@ -14,19 +10,24 @@
     - /api/tools: 获取工具列表
     - /api/skills: 获取技能列表
 
-核心方法:
-    - chat: 聊天接口
-    - chat_with_agent: 使用指定 Agent 对话
-    - chat_stream: 流式聊天接口
-    - get_tools: 获取工具列表
-    - get_skills: 获取技能列表
+响应格式:
+    统一使用 HttpResult 格式:
+    {
+        "success": true/false,
+        "message": "响应消息",
+        "data": null 或 {...}
+    }
 """
 
 from fastapi import HTTPException
 from pydantic import BaseModel
+from typing import Dict, Any
 
-from ..router import InterceptedRouter, InterceptContext
+from ..intercepted_router import InterceptedRouter
+from ..intercept_context import InterceptContext
 from agent.main import get_agent
+from agent.server.http.http_result import HttpResult
+
 
 router = InterceptedRouter()
 
@@ -39,31 +40,8 @@ class ChatRequest(BaseModel):
 
 
 @router.api("/api/chat", methods=["POST"])
-async def chat(ctx: InterceptContext):
-    """
-    聊天接口（自动拦截）。
-    
-    请求体:
-        {
-            "message": "你好",
-            "user_id": "user_123",     # 可选
-            "session_id": "session_1"  # 可选
-        }
-    
-    响应:
-        {
-            "status": "success",
-            "content": "回答内容...",
-            "user_id": "user_123",
-            "session_id": "session_1",
-            "elapsed_time": 1.70,              # 耗时（秒）
-            "total_prompt_tokens": 3966,       # 输入 token 数
-            "total_completion_tokens": 41,     # 输出 token 数
-            "total_tokens": 4007,              # 总 token 数
-            "context_window": 128000,          # 上下文窗口大小
-            "context_usage_percent": 1.3       # 上下文使用百分比
-        }
-    """
+async def chat(ctx: InterceptContext) -> Dict[str, Any]:
+    """聊天接口（自动拦截）。"""
     agent = get_agent()
     
     try:
@@ -73,8 +51,7 @@ async def chat(ctx: InterceptContext):
         total_completion_tokens = result.get("total_completion_tokens", 0)
         total_tokens = total_prompt_tokens + total_completion_tokens
         
-        return {
-            "status": "success",
+        data = {
             "content": result.get("content", ""),
             "user_id": ctx.user_id,
             "session_id": ctx.session_id,
@@ -85,36 +62,15 @@ async def chat(ctx: InterceptContext):
             "context_window": result.get("context_window", 0),
             "context_usage_percent": result.get("context_usage_percent", 0),
         }
+        
+        return HttpResult.success(message="对话完成", data=data).to_dict()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return HttpResult.error(message=str(e)).to_dict()
 
 
 @router.api("/api/chat/{agent_id}", methods=["POST"])
-async def chat_with_agent(ctx: InterceptContext, agent_id: str):
-    """
-    使用指定 Agent 进行对话（自动拦截）。
-    
-    Args:
-        agent_id: Agent ID
-    
-    请求体:
-        {
-            "message": "你好"
-        }
-    
-    响应:
-        {
-            "status": "success",
-            "content": "回答内容...",
-            "agent_id": "xxx",
-            "elapsed_time": 1.70,              # 耗时（秒）
-            "total_prompt_tokens": 3966,       # 输入 token 数
-            "total_completion_tokens": 41,     # 输出 token 数
-            "total_tokens": 4007,              # 总 token 数
-            "context_window": 128000,          # 上下文窗口大小
-            "context_usage_percent": 1.3       # 上下文使用百分比
-        }
-    """
+async def chat_with_agent(ctx: InterceptContext, agent_id: str) -> Dict[str, Any]:
+    """使用指定 Agent 进行对话（自动拦截）。"""
     try:
         agent = get_agent(agent_id)
         result = agent.chat(ctx.content)
@@ -123,8 +79,7 @@ async def chat_with_agent(ctx: InterceptContext, agent_id: str):
         total_completion_tokens = result.get("total_completion_tokens", 0)
         total_tokens = total_prompt_tokens + total_completion_tokens
         
-        return {
-            "status": "success",
+        data = {
             "content": result.get("content", ""),
             "agent_id": agent_id,
             "elapsed_time": result.get("elapsed_time", 0),
@@ -134,25 +89,17 @@ async def chat_with_agent(ctx: InterceptContext, agent_id: str):
             "context_window": result.get("context_window", 0),
             "context_usage_percent": result.get("context_usage_percent", 0),
         }
+        
+        return HttpResult.success(message="对话完成", data=data).to_dict()
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        return HttpResult.error(message=str(e)).to_dict()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return HttpResult.error(message=str(e)).to_dict()
 
 
 @router.api("/api/chat/stream", methods=["POST"])
 async def chat_stream(ctx: InterceptContext):
-    """
-    流式聊天接口（自动拦截）。
-    
-    请求体:
-        {
-            "message": "你好"
-        }
-    
-    响应:
-        流式响应
-    """
+    """流式聊天接口（自动拦截）。"""
     agent = get_agent()
     
     try:
@@ -163,30 +110,14 @@ async def chat_stream(ctx: InterceptContext):
 
 
 @router.api("/api/tools", methods=["GET"])
-async def get_tools(ctx: InterceptContext):
-    """
-    获取工具列表（自动拦截）。
-    
-    响应:
-        {
-            "status": "success",
-            "data": [...]
-        }
-    """
+async def get_tools(ctx: InterceptContext) -> Dict[str, Any]:
+    """获取工具列表（自动拦截）。"""
     agent = get_agent()
-    return {"status": "success", "data": agent.tool_adapter.list_tools()}
+    return HttpResult.success(message="获取成功", data=agent.tool_adapter.list_tools()).to_dict()
 
 
 @router.api("/api/skills", methods=["GET"])
-async def get_skills(ctx: InterceptContext):
-    """
-    获取技能列表（自动拦截）。
-    
-    响应:
-        {
-            "status": "success",
-            "data": {...}
-        }
-    """
+async def get_skills(ctx: InterceptContext) -> Dict[str, Any]:
+    """获取技能列表（自动拦截）。"""
     agent = get_agent()
-    return {"status": "success", "data": agent.skill_loader.skills}
+    return HttpResult.success(message="获取成功", data=agent.skill_loader.skills).to_dict()

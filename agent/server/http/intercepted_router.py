@@ -1,15 +1,11 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :router.py
-# @Time      :2026/03/02
-# @Author    :Ficus
-
 """
 HTTP 拦截路由器模块
 
 功能说明:
     - 定义带拦截器的 FastAPI 路由器
-    - 自动对所有路由执行拦截器链
+    - 共享 InterceptorChain 执行拦截逻辑
     - 支持链式添加拦截器
 
 核心类:
@@ -20,8 +16,9 @@ from fastapi import APIRouter, HTTPException, Request
 from typing import Callable, List
 from loguru import logger
 
-from .context import InterceptContext
-from ..interceptor.base import Interceptor, InterceptResult
+from .intercept_context import InterceptContext
+from ..interceptor.base import Interceptor
+from ..interceptor.interceptor_chain import InterceptorChain
 
 
 def error_code_to_http_status(error_code: str) -> int:
@@ -49,12 +46,12 @@ class InterceptedRouter(APIRouter):
     带拦截器的路由器
     
     功能说明:
-        - 自动对所有路由执行拦截器链
+        - 使用共享的 InterceptorChain 执行拦截
         - 支持链式添加拦截器
         - 区分需要拦截和不需要拦截的路由
     
     核心方法:
-        - set_gateway: 设置网关实例
+        - set_gateway: 设置网关实例，共享其拦截器链
         - use: 添加拦截器
         - api: 注册需要拦截的 API 路由
     
@@ -81,7 +78,7 @@ class InterceptedRouter(APIRouter):
         """
         super().__init__(**kwargs)
         self._gateway = gateway
-        self._interceptors: List[Interceptor] = []
+        self._chain = InterceptorChain()
     
     def set_gateway(self, gateway) -> "InterceptedRouter":
         """
@@ -106,10 +103,21 @@ class InterceptedRouter(APIRouter):
         返回:
             InterceptedRouter: self
         """
-        self._interceptors.append(interceptor)
-        logger.debug(
-            f"[InterceptedRouter] 添加拦截器: {interceptor.name}"
-        )
+        self._chain.add(interceptor)
+        return self
+    
+    def use_chain(self, chain: InterceptorChain) -> "InterceptedRouter":
+        """
+        使用已有的拦截器链（共享）。
+        
+        参数:
+            chain: InterceptorChain 实例
+        
+        返回:
+            InterceptedRouter: self
+        """
+        self._chain = chain
+        logger.debug("[InterceptedRouter] 使用共享的拦截器链")
         return self
     
     async def _execute_interceptors(
@@ -141,23 +149,21 @@ class InterceptedRouter(APIRouter):
             "raw": body,
         }
         
-        for interceptor in self._interceptors:
-            result = await interceptor.intercept(data)
-            
-            if not result.passed:
-                raise HTTPException(
-                    status_code=error_code_to_http_status(result.error_code),
-                    detail=result.response
-                )
-            
-            if result.data:
-                data = result.data
+        result = await self._chain.execute(data)
+        
+        if not result.passed:
+            raise HTTPException(
+                status_code=error_code_to_http_status(result.error_code),
+                detail=result.response
+            )
+        
+        final_data = result.data or data
         
         return InterceptContext(
-            user_id=data.get("user_id", ""),
-            session_id=data.get("session_id", ""),
-            content=data.get("content", ""),
-            raw=data.get("raw", {}),
+            user_id=final_data.get("user_id", ""),
+            session_id=final_data.get("session_id", ""),
+            content=final_data.get("content", ""),
+            raw=final_data.get("raw", {}),
             request=request,
         )
     

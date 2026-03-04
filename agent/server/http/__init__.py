@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :__init__.py
-# @Time      :2026/03/02
-# @Author    :Ficus
-
 """
 HTTP 模块
 
@@ -19,8 +15,8 @@ HTTP 模块
 """
 
 from .app import create_app
-from .router import InterceptedRouter
-from .context import InterceptContext
+from .intercepted_router import InterceptedRouter
+from .intercept_context import InterceptContext
 
 __all__ = [
     "create_app",

@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :telegram.py
-# @Time      :2026/02/22
-# @Author    :Ficus
-
 """
 Telegram 监听器模块
 
@@ -36,54 +32,17 @@ class TelegramListener(BaseListener):
     Telegram 监听器
     
     使用 python-telegram-bot 官方推荐库实现。
-    
-    功能说明:
-        - 支持长轮询模式接收消息
-        - 支持代理配置
-        - 自动处理消息转换
-    
-    核心方法:
-        - start: 启动监听器
-        - stop: 停止监听器
-        - send_message: 发送消息
-        - _convert_to_unified: 转换消息格式
-    
-    配置示例:
-        {
-            "token": "YOUR_BOT_TOKEN",
-            "proxy": "socks5://127.0.0.1:1080"
-        }
     """
     
     PLATFORM_NAME = "telegram"
     PLATFORM_DISPLAY_NAME = "Telegram"
     
     def __init__(self, name: str, config: Dict[str, Any], bus):
-        """
-        初始化 Telegram 监听器。
-        
-        参数:
-            name: 监听器名称
-            config: 配置字典，包含 token 和可选的 proxy
-            bus: 消息总线实例
-        """
         super().__init__(name, config, bus)
         self._app = None
         self._bot = None
     
     async def start(self) -> bool:
-        """
-        启动 Telegram 监听器。
-        
-        实现逻辑:
-            1. 初始化 python-telegram-bot Application
-            2. 配置消息处理器
-            3. 订阅 outgoing 事件
-            4. 启动长轮询
-        
-        返回:
-            bool: 启动是否成功
-        """
         try:
             from telegram import Bot
             from telegram.ext import Application, MessageHandler, filters
@@ -139,7 +98,6 @@ class TelegramListener(BaseListener):
             return False
     
     async def _polling(self) -> None:
-        """长轮询接收消息"""
         try:
             await self._app.updater.start_polling(
                 drop_pending_updates=True,
@@ -155,12 +113,6 @@ class TelegramListener(BaseListener):
             logger.error(f"[{self.name}] 轮询异常: {e}")
     
     async def stop(self) -> bool:
-        """
-        停止 Telegram 监听器。
-        
-        返回:
-            bool: 停止是否成功
-        """
         try:
             self._running = False
             
@@ -180,13 +132,6 @@ class TelegramListener(BaseListener):
             return False
     
     async def _handle_update(self, update, context) -> None:
-        """
-        处理 Telegram 更新。
-        
-        参数:
-            update: Telegram Update 对象
-            context: 回调上下文
-        """
         if update.message:
             await self._publish_incoming(update)
         elif update.edited_message:
@@ -196,12 +141,6 @@ class TelegramListener(BaseListener):
             await self._handle_callback_query(update.callback_query)
     
     async def _handle_callback_query(self, callback_query) -> None:
-        """
-        处理回调查询（按钮点击等）。
-        
-        参数:
-            callback_query: CallbackQuery 对象
-        """
         from telegram import Update
         
         fake_update = Update(
@@ -213,17 +152,6 @@ class TelegramListener(BaseListener):
             await self._publish_incoming(fake_update)
     
     async def send_message(self, target: Dict[str, str], content: str, **kwargs) -> Dict[str, Any]:
-        """
-        发送消息到 Telegram。
-        
-        参数:
-            target: 目标信息，包含 chat_id
-            content: 消息内容
-            **kwargs: 其他参数（如 reply_to, parse_mode）
-        
-        返回:
-            Dict: 发送结果
-        """
         try:
             chat_id = target.get("chat_id")
             if not chat_id:
@@ -249,15 +177,6 @@ class TelegramListener(BaseListener):
             return {"success": False, "error": str(e)}
     
     async def _convert_to_unified(self, raw) -> UnifiedMessage:
-        """
-        将 Telegram 消息转换为统一格式。
-        
-        参数:
-            raw: Telegram Update 对象
-        
-        返回:
-            UnifiedMessage: 统一格式消息
-        """
         msg = raw.effective_message
         
         message_type = "text"

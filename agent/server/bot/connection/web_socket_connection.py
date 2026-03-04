@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
 """
 WebSocket 连接实现。
 
@@ -20,37 +22,9 @@ class WebSocketConnection(BaseConnection):
         - 心跳保活
         - 支持文本和二进制消息
         - 支持认证
-    
-    使用示例:
-        ```python
-        conn = WebSocketConnection(
-            url="ws://localhost:3001",
-            name="QQBot",
-            heartbeat_interval=30
-        )
-        conn.on_message = handle_message
-        await conn.connect()
-        ```
-    
-    配置项:
-        - url: WebSocket 地址
-        - access_token: 认证令牌（可选）
-        - heartbeat_message: 心跳消息内容（默认空）
-        - ping_interval: 发送 ping 间隔（秒）
     """
     
     def __init__(self, url: str, name: str = "", **options):
-        """
-        初始化 WebSocket 连接。
-        
-        参数:
-            url: WebSocket 连接地址
-            name: 连接名称
-            **options: 配置选项
-                - access_token: 认证令牌
-                - heartbeat_message: 心跳消息
-                - ping_interval: ping 间隔
-        """
         super().__init__(name=name, **options)
         self.url = url
         self._access_token = options.get("access_token", "")
@@ -61,21 +35,14 @@ class WebSocketConnection(BaseConnection):
         self._ping_task: Optional[asyncio.Task] = None
     
     async def _do_connect(self) -> bool:
-        """
-        建立 WebSocket 连接。
-        
-        返回:
-            bool: 连接是否成功
-        """
+        """建立 WebSocket 连接。"""
         try:
             import websockets
             
             self._log_info(f"正在连接 {self.url}...")
             
-            # 建立连接
             self._ws = await websockets.connect(self.url)
             
-            # 发送认证（如果有 token）
             if self._access_token:
                 auth_msg = {
                     "action": "authenticate",
@@ -96,7 +63,6 @@ class WebSocketConnection(BaseConnection):
     
     async def _do_disconnect(self) -> None:
         """断开 WebSocket 连接。"""
-        # 停止 ping 任务
         if self._ping_task and not self._ping_task.done():
             self._ping_task.cancel()
             try:
@@ -104,7 +70,6 @@ class WebSocketConnection(BaseConnection):
             except asyncio.CancelledError:
                 pass
         
-        # 关闭连接
         if self._ws:
             try:
                 await self._ws.close()
@@ -115,20 +80,11 @@ class WebSocketConnection(BaseConnection):
                 self._ws = None
     
     async def _do_send(self, data: Any) -> bool:
-        """
-        发送 WebSocket 消息。
-        
-        参数:
-            data: 要发送的数据（字符串或字典）
-        
-        返回:
-            bool: 发送是否成功
-        """
+        """发送 WebSocket 消息。"""
         if not self._ws:
             return False
         
         try:
-            # 自动转换字典为 JSON
             if isinstance(data, dict):
                 data = json.dumps(data, ensure_ascii=False)
             
@@ -140,15 +96,7 @@ class WebSocketConnection(BaseConnection):
             return False
     
     async def _do_receive(self) -> Any:
-        """
-        接收 WebSocket 消息。
-        
-        返回:
-            接收到的数据（字符串或解析后的 JSON）
-        
-        异常:
-            ConnectionError: 连接断开时抛出
-        """
+        """接收 WebSocket 消息。"""
         if not self._ws:
             raise ConnectionError("未连接")
         
@@ -157,7 +105,6 @@ class WebSocketConnection(BaseConnection):
             
             message = await self._ws.recv()
             
-            # 尝试解析 JSON
             try:
                 return json.loads(message)
             except json.JSONDecodeError:
@@ -176,8 +123,6 @@ class WebSocketConnection(BaseConnection):
     def _start_background_tasks(self) -> None:
         """启动后台任务。"""
         super()._start_background_tasks()
-        
-        # 启动 ping 任务（保持连接活跃）
         self._ping_task = asyncio.create_task(self._ping_loop())
     
     async def _stop_background_tasks(self) -> None:
@@ -201,7 +146,6 @@ class WebSocketConnection(BaseConnection):
                 
                 if self._ws and self.is_connected:
                     try:
-                        # 发送 ping
                         pong_waiter = await self._ws.ping()
                         await asyncio.wait_for(pong_waiter, timeout=10)
                     except Exception as e:

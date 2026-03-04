@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :__init__.py
-# @Time      :2026/02/22
-# @Author    :Ficus
-
 """
 Server 服务模块
 
@@ -15,9 +11,9 @@ Server 服务模块
     - 提供 HTTP API 服务
 
 核心组件:
+    - Gateway: 统一网关（Bot 和 HTTP 共享）
     - MessageBus: 消息总线
     - BaseListener: 基础监听器接口
-    - Gateway: 网关主程序
     - CoreProcessor: 核心处理器
     - EchoProcessor: 回声处理器（测试用）
     - InterceptorChain: 拦截器链
@@ -25,15 +21,28 @@ Server 服务模块
     - InterceptResult: 拦截结果
 """
 
-from .message_bus import MessageBus, UnifiedMessage, OutgoingMessage, EventEnvelope
-from .base_listener import BaseListener
 from .gateway import Gateway
-from .core_processor import CoreProcessor, EchoProcessor
-from .listeners import (
+from .bot import (
+    MessageBus,
+    UnifiedMessage,
+    OutgoingMessage,
+    EventEnvelope,
+    BaseListener,
+    CoreProcessor,
+    EchoProcessor,
+    ChatSessionMap,
+    ChatSessionInfo,
+)
+from .bot.listeners import (
     TelegramListener,
     LarkListener,
     DiscordListener,
-    get_listener_class
+    QQListener,
+    WeComListener,
+    DingTalkListener,
+    SlackListener,
+    get_listener_class,
+    list_available_platforms,
 )
 from .interceptor import (
     InterceptResult,
@@ -57,10 +66,18 @@ __all__ = [
     "Gateway",
     "CoreProcessor",
     "EchoProcessor",
+    "ChatSessionMap",
+    "ChatSessionInfo",
+    # 平台监听器
     "TelegramListener",
     "LarkListener",
     "DiscordListener",
+    "QQListener",
+    "WeComListener",
+    "DingTalkListener",
+    "SlackListener",
     "get_listener_class",
+    "list_available_platforms",
     # 拦截器相关
     "InterceptResult",
     "Interceptor",

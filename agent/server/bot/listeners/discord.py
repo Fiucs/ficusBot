@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :discord.py
-# @Time      :2026/02/22
-# @Author    :Ficus
-
 """
 Discord 监听器模块
 
@@ -31,56 +27,16 @@ from ..message_bus import UnifiedMessage
 
 
 class DiscordListener(BaseListener):
-    """
-    Discord 监听器
-    
-    使用 discord.py 官方推荐库实现。
-    
-    功能说明:
-        - 支持 Gateway 模式接收消息
-        - 支持消息内容和成员意图
-        - 自动处理消息转换
-    
-    核心方法:
-        - start: 启动监听器
-        - stop: 停止监听器
-        - send_message: 发送消息
-        - _convert_to_unified: 转换消息格式
-    
-    配置示例:
-        {
-            "token": "YOUR_BOT_TOKEN"
-        }
-    """
+    """Discord 监听器"""
     
     PLATFORM_NAME = "discord"
     PLATFORM_DISPLAY_NAME = "Discord"
     
     def __init__(self, name: str, config: Dict[str, Any], bus):
-        """
-        初始化 Discord 监听器。
-        
-        参数:
-            name: 监听器名称
-            config: 配置字典，包含 token
-            bus: 消息总线实例
-        """
         super().__init__(name, config, bus)
         self._bot = None
     
     async def start(self) -> bool:
-        """
-        启动 Discord 监听器。
-        
-        实现逻辑:
-            1. 初始化 discord.py Bot
-            2. 配置消息处理器
-            3. 订阅 outgoing 事件
-            4. 启动 Gateway 连接
-        
-        返回:
-            bool: 启动是否成功
-        """
         try:
             import discord
             from discord.ext import commands
@@ -107,21 +63,13 @@ class DiscordListener(BaseListener):
                     "username": self._bot.user.name,
                     "discriminator": self._bot.user.discriminator
                 }
-                logger.info(
-                    f"[{self.name}] Discord Bot 已连接: "
-                    f"{self._bot.user.name}#{self._bot.user.discriminator}"
-                )
+                logger.info(f"[{self.name}] Discord Bot 已连接: {self._bot.user.name}")
             
             @self._bot.event
             async def on_message(message):
                 if message.author.bot:
                     return
-                
                 await self._publish_incoming(message)
-            
-            @self._bot.event
-            async def on_error(event, *args, **kwargs):
-                logger.error(f"[{self.name}] Discord 事件错误: {event}")
             
             self.bus.subscribe("outgoing", self._handle_outgoing)
             
@@ -140,48 +88,25 @@ class DiscordListener(BaseListener):
             return False
     
     async def _run_bot(self) -> None:
-        """运行 Discord Bot"""
         try:
             await self._bot.start(self.config["token"])
         except asyncio.CancelledError:
-            logger.debug(f"[{self.name}] Bot 任务被取消")
+            pass
         except Exception as e:
             logger.error(f"[{self.name}] Bot 运行异常: {e}")
     
     async def stop(self) -> bool:
-        """
-        停止 Discord 监听器。
+        self._running = False
         
-        返回:
-            bool: 停止是否成功
-        """
-        try:
-            self._running = False
-            
-            if self._bot:
-                await self._bot.close()
-            
-            await self._cancel_all_tasks()
-            
-            logger.info(f"[{self.name}] Discord 监听器已停止")
-            return True
-            
-        except Exception as e:
-            logger.error(f"[{self.name}] 停止失败: {e}")
-            return False
+        if self._bot:
+            await self._bot.close()
+        
+        await self._cancel_all_tasks()
+        
+        logger.info(f"[{self.name}] Discord 监听器已停止")
+        return True
     
     async def send_message(self, target: Dict[str, str], content: str, **kwargs) -> Dict[str, Any]:
-        """
-        发送消息到 Discord。
-        
-        参数:
-            target: 目标信息，包含 chat_id（频道ID）
-            content: 消息内容
-            **kwargs: 其他参数（如 reply_to）
-        
-        返回:
-            Dict: 发送结果
-        """
         try:
             chat_id = target.get("chat_id")
             if not chat_id:
@@ -202,25 +127,12 @@ class DiscordListener(BaseListener):
             else:
                 message = await channel.send(content)
             
-            return {
-                "success": True,
-                "message_id": str(message.id)
-            }
+            return {"success": True, "message_id": str(message.id)}
             
         except Exception as e:
-            logger.error(f"[{self.name}] 发送消息失败: {e}")
             return {"success": False, "error": str(e)}
     
     async def _convert_to_unified(self, raw) -> UnifiedMessage:
-        """
-        将 Discord 消息转换为统一格式。
-        
-        参数:
-            raw: discord.Message 对象
-        
-        返回:
-            UnifiedMessage: 统一格式消息
-        """
         message_type = "text"
         content = raw.content or ""
         
@@ -236,11 +148,6 @@ class DiscordListener(BaseListener):
                 message_type = "file"
                 files = ", ".join(a.filename for a in raw.attachments)
                 content = f"{content}\n[附件: {files}]".strip()
-        
-        if raw.embeds:
-            embed = raw.embeds[0]
-            if embed.description:
-                content = f"{content}\n{embed.description}".strip()
         
         thread_id = str(raw.thread.id) if raw.thread else None
         

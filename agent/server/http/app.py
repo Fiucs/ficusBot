@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from .router import InterceptedRouter
+from .intercepted_router import InterceptedRouter
 from .routes import chat, health, command
 
 
@@ -51,15 +51,17 @@ def create_app(gateway=None) -> FastAPI:
     
     # 配置需要拦截的路由
     if gateway:
-        # chat 路由共享 Gateway 的拦截器链
+        # chat 路由直接共享 Gateway 的拦截器链
         chat.router.set_gateway(gateway)
-        for interceptor in gateway.incoming_chain.interceptors:
-            chat.router.use(interceptor)
+        chat.router.use_chain(gateway.incoming_chain)
+        # command 路由也共享拦截器链
+        command.router.set_gateway(gateway)
+        command.router.use_chain(gateway.incoming_chain)
     
     # 注册路由
     app.include_router(health.router)    # 不拦截
     app.include_router(chat.router)      # 拦截
-    app.include_router(command.router)   # 不拦截（独立命令接口）
+    app.include_router(command.router)   # 拦截
     
     logger.info("[HTTP] FastAPI 应用已创建")
     return app

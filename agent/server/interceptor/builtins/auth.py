@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :auth.py
-# @Time      :2026/03/02
-# @Author    :Ficus
-
 """
 权限验证拦截器模块
 
@@ -15,6 +11,7 @@
     - AuthInterceptor: 权限验证拦截器
 """
 
+from loguru import logger
 from ..base import Interceptor, InterceptResult
 
 
@@ -51,15 +48,14 @@ class AuthInterceptor(Interceptor):
         """
         self.whitelist = whitelist or []
         self.blacklist = blacklist or []
+        logger.debug(
+            f"[{self.name}] 初始化 | 白名单: {len(self.whitelist)} 人 | "
+            f"黑名单: {len(self.blacklist)} 人"
+        )
     
     @property
     def name(self) -> str:
-        """
-        拦截器名称。
-        
-        返回:
-            str: "auth"
-        """
+        """拦截器名称"""
         return "auth"
     
     async def intercept(self, data: dict) -> InterceptResult:
@@ -77,9 +73,14 @@ class AuthInterceptor(Interceptor):
             InterceptResult: 验证结果
         """
         user_id = data.get("user_id", "")
+        platform = data.get("platform", "unknown")
         
         # 黑名单检查
         if user_id in self.blacklist:
+            logger.info(
+                f"[{self.name}] 拦截 | 平台: {platform} | "
+                f"用户: {user_id} | 原因: 黑名单用户"
+            )
             return InterceptResult.reject(
                 response="⛔ 您已被禁止使用此服务",
                 reason=f"用户 {user_id} 在黑名单中",
@@ -88,10 +89,16 @@ class AuthInterceptor(Interceptor):
         
         # 白名单检查（如果配置了白名单）
         if self.whitelist and user_id not in self.whitelist:
+            logger.info(
+                f"[{self.name}] 拦截 | 平台: {platform} | "
+                f"用户: {user_id} | 原因: 不在白名单"
+            )
             return InterceptResult.reject(
                 response="⛔ 抱歉，您没有使用权限",
                 reason=f"用户 {user_id} 不在白名单中",
                 error_code="FORBIDDEN"
             )
+        logger.info(f"[{self.name}] 通过 | 平台: {platform} | 用户: {user_id}, 消息: {data}")
+               
         
         return InterceptResult.ok(data)

@@ -291,9 +291,126 @@ class LLMClient:
                     if tc.get("function"):
                         total_chars += len(str(tc["function"]))
         return int(total_chars / 3)
+
+ 
     
+    THINKING_PROVIDERS = {
+        "deepseek": {
+            "mode": "thinking",
+            "supports_budget": False
+        },
+        "anthropic": {
+            "mode": "thinking",
+            "supports_budget": True,
+            "default_budget_tokens": 1024
+        },
+        "openai": {
+            "mode": "reasoning_effort",
+            "default_effort": "medium",
+            "supported_models": ["o1", "o3", "o4", "gpt-5"]
+        },
+        "zai": {"mode": "thinking", "supports_budget": False},
+        "glm": {"mode": "thinking", "supports_budget": False},
+        "qwen": {"mode": "thinking", "supports_budget": False},
+        "tongyi": {"mode": "thinking", "supports_budget": False},
+        "volcengine": {"mode": "thinking", "supports_budget": False},   # 新增
+        "lm_studio": {"mode": "thinking", "supports_budget": False},
+        "moonshot": {"mode": "thinking", "supports_budget": False},
+        "kimi": {"mode": "thinking", "supports_budget": False},
+        "gemini": {
+            "mode": "thinking",
+            "supports_budget": True,
+            "default_budget_tokens": 1024
+        },
+        "google": {  # 备用
+            "mode": "thinking",
+            "supports_budget": True,
+            "default_budget_tokens": 1024
+        }
+    }
+    
+    def _build_thinking_params(self, config: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        根据厂商配置构建 thinking 参数（2026-03-04 终极兼容版）
+        支持 lm_studio / qwen 本地模型正确关闭思考
+        """
+        thinking_config = config.get("thinking")
+        if not thinking_config:
+            return kwargs
+
+        # ==================== 增强 provider 检测 ====================
+        provider = config.get("provider", "").lower()
+        model_name = (config.get("model_name", "") or config.get("litellm_model_name", "")).lower()
+        
+        if not provider:
+            if any(x in model_name for x in ["glm", "zai"]):
+                provider = "zai"
+            elif "deepseek" in model_name:
+                provider = "deepseek"
+            elif any(x in model_name for x in ["qwen", "lm_studio"]):
+                provider = "qwen"          # ← lm_studio 的 qwen 模型统一走这里
+            elif any(x in model_name for x in ["doubao", "volcengine"]):
+                provider = "volcengine"
+            elif "gemini" in model_name:
+                provider = "gemini"
+            # 其他保持 config 里的 provider
+        
+        provider_config = self.THINKING_PROVIDERS.get(provider, {})
+        # ===========================================================
+
+        enabled = thinking_config.get("enabled", True)
+        mode = thinking_config.get("mode", provider_config.get("mode", "thinking"))
+
+        if mode == "thinking":
+            if enabled:
+                thinking_param = {"type": "enabled"}
+                if provider_config.get("supports_budget", False):
+                    budget_tokens = thinking_config.get(
+                        "budget_tokens", 
+                        provider_config.get("default_budget_tokens", 1024)
+                    )
+                    thinking_param["budget_tokens"] = budget_tokens
+            else:
+                thinking_param = {"type": "disabled"}
+
+            # ==================== 厂商专属注入 ====================
+            if provider in ("zai", "glm", "deepseek", "volcengine"):
+                # 这些厂商必须用 thinking 对象
+                if "extra_body" not in kwargs:
+                    kwargs["extra_body"] = {}
+                kwargs["extra_body"]["thinking"] = thinking_param
+                logger.debug(f"[Thinking] {provider}: extra_body.thinking = {thinking_param}")
+
+            elif provider in ("qwen", "tongyi", "lm_studio"):
+                # Qwen / 通义 / LM Studio 本地 Qwen → 用 enable_thinking
+                if "extra_body" not in kwargs:
+                    kwargs["extra_body"] = {}
+                kwargs["extra_body"]["enable_thinking"] = enabled
+                logger.debug(f"[Thinking] {provider}: extra_body.enable_thinking = {enabled}")
+
+            elif provider in ("gemini", "google"):
+                # Gemini 用 thinking_budget
+                budget = thinking_config.get("budget_tokens", 1024) if enabled else 0
+                kwargs["thinking_budget"] = budget
+                logger.debug(f"[Thinking] gemini: thinking_budget = {budget}")
+
+            else:
+                # Anthropic / OpenAI 等走顶层
+                kwargs["thinking"] = thinking_param
+                logger.debug(f"[Thinking] {provider}: thinking={thinking_param}")
+
+        elif mode == "reasoning_effort":
+            if enabled:
+                effort = thinking_config.get("effort", provider_config.get("default_effort", "medium"))
+                supported = provider_config.get("supported_models", [])
+                is_reasoning_model = any(s in model_name for s in supported)
+                if is_reasoning_model:
+                    kwargs["reasoning_effort"] = effort
+                    logger.debug(f"[Thinking] reasoning_effort={effort}")
+
+        return kwargs
     def chat_completion(self, messages: List[Dict[str, str]], tools: Optional[List[Dict[str, Any]]] = None, stream: Optional[bool] = None
-                        ,custom_model: Optional[str] = None):
+                            ,custom_model: Optional[str] = None):
         """
         调用大模型进行对话补全
         
@@ -337,6 +454,11 @@ class LLMClient:
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
+            
+            kwargs = self._build_thinking_params(config, kwargs)
+
+            import json
+            logger.debug(f"[LLMClient] 完整请求参数:\n{json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)}")
 
             return completion(**kwargs)
 

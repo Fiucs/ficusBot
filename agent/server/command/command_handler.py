@@ -28,8 +28,8 @@ from typing import Callable, Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from loguru import logger
 
-from .context import CommandContext
-from .result import CommandResult
+from .command_context import CommandContext
+from .command_result import CommandResult
 
 if TYPE_CHECKING:
     from agent.registry import AgentRegistry
@@ -293,36 +293,48 @@ class CommandHandler:
         if not agent:
             return CommandResult.error_result("Agent 未初始化")
         
-        agent.conversation.clear_history()
-        
-        return CommandResult.success_result("✅ 已清空对话上下文")
+        agent.conversation.clear()
+        return CommandResult.success_result("✅ 对话上下文已清空")
     
     def _cmd_models(self, args: str, context: CommandContext) -> CommandResult:
         """处理 /models 命令"""
         from agent.config.configloader import GLOBAL_CONFIG
         
         agent = self._get_agent(context)
-        current_model = agent.llm_client.default_model if agent else "未知"
+        current_model = agent.llm_client.current_model_alias if agent else "未知"
         
-        available_models = GLOBAL_CONFIG.get("llm.available_models", [])
+        all_models = GLOBAL_CONFIG.list_all_models()
         
-        if not available_models:
-            return CommandResult.success_result(f"📌 当前模型: {current_model}")
+        if not all_models:
+            return CommandResult.success_result("� 暂无配置任何模型")
         
         lines = ["📋 可用模型列表:", ""]
         
-        for model in available_models:
-            marker = "👉 " if model == current_model else "   "
-            lines.append(f"{marker}{model}")
+        for full_alias, model_info in all_models.items():
+            marker = "👉 " if full_alias == current_model else "   "
+            remark = model_info.get("remark", "")
+            remark_str = f" - {remark}" if remark else ""
+            lines.append(f"{marker}{full_alias}{remark_str}")
         
         lines.append("")
         lines.append(f"📌 当前模型: {current_model}")
         lines.append("💡 使用 /switch <模型名> 切换模型")
         
-        return CommandResult.success_result(
-            "\n".join(lines), 
-            data={"current_model": current_model, "available_models": available_models}
-        )
+        models_data = {
+            "current_model": current_model,
+            "models": [
+                {
+                    "alias": full_alias,
+                    "provider": info.get("provider", ""),
+                    "model_name": info.get("model_name", ""),
+                    "remark": info.get("remark", ""),
+                    "is_current": full_alias == current_model
+                }
+                for full_alias, info in all_models.items()
+            ]
+        }
+        
+        return CommandResult.success_result("\n".join(lines), data=models_data)
     
     def _cmd_switch(self, args: str, context: CommandContext) -> CommandResult:
         """处理 /switch 命令"""
@@ -335,15 +347,19 @@ class CommandHandler:
             return CommandResult.error_result("请指定模型名称\n用法: /switch <模型名>")
         
         from agent.config.configloader import GLOBAL_CONFIG
-        available_models = GLOBAL_CONFIG.get("llm.available_models", [])
+        all_models = GLOBAL_CONFIG.list_all_models()
         
-        if available_models and model_name not in available_models:
+        if model_name not in all_models:
+            available_list = list(all_models.keys())
             return CommandResult.error_result(
-                f"模型 '{model_name}' 不在可用列表中\n可用模型: {', '.join(available_models)}"
+                f"模型 '{model_name}' 不在可用列表中\n可用模型: {', '.join(available_list)}"
             )
         
-        old_model = agent.llm_client.default_model
-        agent.llm_client.default_model = model_name
+        old_model = agent.llm_client.current_model_alias
+        result = agent.llm_client.switch_model(model_name)
+        
+        if result.get("status") == "error":
+            return CommandResult.error_result(result.get("message", "切换模型失败"))
         
         return CommandResult.success_result(
             f"✅ 已切换模型\n📌 {old_model} → {model_name}"

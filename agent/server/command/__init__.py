@@ -39,9 +39,9 @@
     if result.is_command:
         print(result.message)
 """
-from .context import CommandContext
-from .result import CommandResult
-from .handler import CommandHandler
+from .command_context import CommandContext
+from .command_result import CommandResult
+from .command_handler import CommandHandler
 
 __all__ = [
     "CommandContext",

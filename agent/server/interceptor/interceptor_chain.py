@@ -90,28 +90,48 @@ class InterceptorChain:
         """
         current_data = data
         
+        platform = data.get("platform", "unknown")
+        listener = data.get("listener", "unknown")
+        user_id = data.get("user_id", "anonymous")
+        
+        logger.info(
+            f"[InterceptorChain] 收到消息 | 平台: {platform} | "
+            f"监听器: {listener} | 用户: {user_id}"
+        )
+        
         for interceptor in self._interceptors:
             try:
                 result = await interceptor.intercept(current_data)
                 
                 if not result.passed:
                     logger.info(
-                        f"[InterceptorChain] 被 {interceptor.name} 拦截: {result.reason}"
+                        f"[{interceptor.name}] 拦截 | 平台: {platform} | "
+                        f"用户: {user_id} | 原因: {result.reason}"
                     )
                     return result
+                
+                logger.info(
+                    f"[{interceptor.name}] 通过 | 平台: {platform} | 用户: {user_id}"
+                )
                 
                 if result.data:
                     current_data = result.data
                     
             except Exception as e:
                 logger.error(
-                    f"[InterceptorChain] {interceptor.name} 执行异常: {e}"
+                    f"[{interceptor.name}] 异常 | 平台: {platform} | "
+                    f"用户: {user_id} | 错误: {e}"
                 )
                 return InterceptResult.reject(
                     response="系统错误，请稍后重试",
                     reason=f"拦截器异常: {e}",
                     error_code="INTERNAL_ERROR"
                 )
+        
+        logger.info(
+            f"[InterceptorChain] 拦截器链通过 | 平台: {platform} | "
+            f"监听器: {listener}"
+        )
         
         return InterceptResult.ok(current_data)
     

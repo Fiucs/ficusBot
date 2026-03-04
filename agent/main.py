@@ -811,9 +811,9 @@ class Agent:
         logger.debug(f"[工具准备] 工具数: {len(tools)}")
         
         # 遍历打印工具列表
-        # logger.debug(f"[工具准备] 工具列表：")
-        # for tool in tools:
-        #     logger.debug(f"工具名: {tool}")
+        logger.debug(f"[工具准备] 工具列表：")
+        for tool in tools:
+            logger.debug(f"工具名: {tool}")
         logger.info(f"系统提示词: {self.conversation.system_prompt}")
 
         while current_tool_calls < self.max_tool_calls:
@@ -865,6 +865,43 @@ class Agent:
             choice = response.choices[0]
             message = choice.message
 
+            reasoning_content = None
+            reasoning_tokens = None
+            
+            reasoning_content = getattr(message, 'reasoning_content', None)
+            if not reasoning_content:
+                reasoning_content = getattr(message, 'thinking_content', None)
+            if not reasoning_content:
+                reasoning_content = getattr(message, 'thoughts', None)
+            if not reasoning_content:
+                thinking_blocks = getattr(message, 'thinking', None)
+                if thinking_blocks and hasattr(thinking_blocks, '__iter__'):
+                    try:
+                        reasoning_content = '\n'.join([
+                            block.text if hasattr(block, 'text') else str(block)
+                            for block in thinking_blocks
+                        ])
+                    except:
+                        pass
+            
+            if hasattr(response, 'usage') and response.usage:
+                if hasattr(response.usage, 'completion_tokens_details'):
+                    reasoning_tokens = getattr(response.usage.completion_tokens_details, 'reasoning_tokens', None)
+            
+            if reasoning_content:
+                logger.info(f"[思考过程] 模型进行了推理思考:")
+                print(f"\n{Fore.CYAN}{'='*60}")
+                print(f"🧠 思考过程 (reasoning_content):")
+                print(f"{'='*60}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}{reasoning_content}{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+            elif reasoning_tokens and reasoning_tokens > 0:
+                logger.info(f"[思考过程] 模型使用了 {reasoning_tokens} 个推理 token (内容未公开)")
+                print(f"\n{Fore.CYAN}{'='*60}")
+                print(f"🧠 思考过程: 模型内部进行了 {reasoning_tokens} tokens 的推理")
+                print(f"   (推理内容不对外公开，仅显示 token 数量)")
+                print(f"{'='*60}{Style.RESET_ALL}\n")
+
             if not self._process_tool_calls(message):
                 self.conversation.add_message(role="assistant", content=message.content)
                 
@@ -895,6 +932,7 @@ class Agent:
 
                 return {
                     "content": message.content or "",
+                    "reasoning_content": reasoning_content,
                     "elapsed_time": elapsed,
                     "total_prompt_tokens": total_prompt_tokens,
                     "total_completion_tokens": total_completion_tokens,
@@ -984,7 +1022,10 @@ def get_app():
         FastAPI: FastAPI 应用实例
     """
     from agent.server.http import create_app
-    return create_app()
+    from agent.server import Gateway
+    
+    gateway = Gateway()
+    return create_app(gateway)
 
 
 # 向后兼容：导出 app 变量

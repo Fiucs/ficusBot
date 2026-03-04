@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :sensitive.py
-# @Time      :2026/03/02
-# @Author    :Ficus
-
 """
 敏感词过滤拦截器模块
 
@@ -52,15 +48,14 @@ class SensitiveWordInterceptor(Interceptor):
         """
         self.words = words or []
         self.replace_char = replace_char
+        logger.debug(
+            f"[{self.name}] 初始化 | 敏感词数量: {len(self.words)} | "
+            f"替换字符: {replace_char}"
+        )
     
     @property
     def name(self) -> str:
-        """
-        拦截器名称。
-        
-        返回:
-            str: "sensitive_word"
-        """
+        """拦截器名称"""
         return "sensitive_word"
     
     async def intercept(self, data: dict) -> InterceptResult:
@@ -76,6 +71,8 @@ class SensitiveWordInterceptor(Interceptor):
             InterceptResult: 过滤结果（始终通过）
         """
         content = data.get("content", "")
+        platform = data.get("platform", "unknown")
+        user_id = data.get("user_id", "anonymous")
         
         if not content or not isinstance(content, str):
             return InterceptResult.ok(data)
@@ -89,8 +86,9 @@ class SensitiveWordInterceptor(Interceptor):
         
         if found_words:
             data["content"] = content
-            logger.warning(
-                f"[{self.name}] 发现敏感词: {found_words}"
+            logger.info(
+                f"[{self.name}] 过滤 | 平台: {platform} | "
+                f"用户: {user_id} | 敏感词: {found_words}"
             )
         
         return InterceptResult.ok(data)

@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-# @FileName  :__init__.py
-# @Time      :2026/03/02
-# @Author    :Ficus
-
 """
 拦截器模块
 
@@ -21,7 +17,7 @@
 """
 
 from .base import InterceptResult, Interceptor
-from .chain import InterceptorChain
+from .interceptor_chain import InterceptorChain
 
 __all__ = [
     "InterceptResult",

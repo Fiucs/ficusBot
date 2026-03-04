@@ -1,0 +1,442 @@
+{
+    // 基础路径配置
+    "workspace_root": "C:\\Users\\Administrator\\workspace",
+    // 文件操作白名单：仅允许访问这些目录（为空则不限制）
+    "file_allow_list": [
+    ],
+    // Shell命令白名单：仅允许执行这些命令（为空则不限制，优先级高于黑名单）
+    "shell_cmd_whitelist": [],
+    // Shell命令黑名单：禁止执行的高危命令（白名单存在时此配置失效）
+    "shell_cmd_deny_list": [
+        "rm -rf /", "dd if=", "mkfs", ">:(){:|:&};:",
+        "sudo", "su", "chmod 777 /", "shutdown", "reboot",
+        "format ", "diskpart", "bcdedit", "sfc /",
+        "del /s /q", "rmdir /s /q", "rd /s /q", "cipher /w",
+        "takeown /f", "icacls ", "reg delete", "reg import",
+        "wbadmin", "net user /delete", "net localgroup"
+    ],
+    // Shell路径白名单：仅允许在这些目录执行（为空则不限制）
+    "shell_path_whitelist": [
+    ],
+    // Shell路径黑名单：禁止在这些目录执行（白名单存在时此配置失效）
+    "shell_path_deny_list": [
+        "C:\\Windows","C:\\Windows\\System32","C:\\Program Files",
+        "C:\\Program Files (x86)","C:\\ProgramData","C:\\System Volume Information",
+        "C:\\$Recycle.Bin","C:\\Boot","C:\\EFI"
+    ],
+    // LLM大模型配置（厂商名=LiteLLM标准前缀）
+    "llm": {
+        // 全局通用参数（所有模型默认继承，单模型可覆盖）
+        "global": {
+            "temperature": 0.3,
+            // 每次回复最多生成的 token 数
+            "max_tokens": 8096,
+            // 模型上下文窗口大小（输入+输出的总容量上限），默认 128k
+            "context_window": 128000,
+            "timeout": 60,
+            "drop_params": true
+        },
+        // 默认主模型（格式：厂商名/模型别名）
+        // "default_model": "zai/glm-4.7",
+        // 最大工具调用次数
+        "max_tool_calls": 20,
+        // Agent 专用 LLM 参数预设
+        "agent_presets": {
+            "coder": {
+                "temperature": 0.5,
+                "max_tokens": 16000,
+                "timeout": 120
+            },
+            "researcher": {
+                "temperature": 0.2,
+                "max_tokens": 12000,
+                "timeout": 90
+            },
+            "creative": {
+                "temperature": 0.8,
+                "max_tokens": 8096
+            },
+            "precise": {
+                "temperature": 0.0,
+                "max_tokens": 4096
+            }
+        },
+        // 厂商分组配置，key为LiteLLM标准厂商前缀
+        "providers": {
+			 "custom": {
+				"api_key": "sk-your-custom-key",
+				"api_base": "https://api.my-company.com/v1",
+				"models": {
+					"my-llm": {
+					"remark": "my-llm"
+							},
+					"my-llm-large": {
+						"remark": "my-llm-large"
+            }
+        }
+    },
+            // OpenAI官方
+            "openai": {
+                "api_key": "你的OpenAI API Key",
+                "api_base": "",
+                "models": {
+                    "gpt35": {
+                        "model_name": "gpt-3.5-turbo",
+                        "remark": "OpenAI GPT-3.5 Turbo",
+                        "context_window": 128000
+                    },
+                    "o1-mini": {
+                        "model_name": "o1-mini",
+                        "remark": "OpenAI o1-mini 推理模型",
+                        "thinking": {
+                            "mode": "reasoning_effort",
+                            "effort": "medium"
+                        }
+                    },
+                }
+            },
+            // 已测试 深度推理模型
+            "volcengine": {
+                "api_key": "sk-your-custom-key",
+                "api_base": "",
+                "models": {
+                    "doubao-seed-2-0-pro-260215": {
+                        "model_name": "doubao-seed-2-0-pro-260215",
+                        "remark": "volcengine/doubao-seed-2-0-pro-260215",
+                        "context_window": 128000
+                    },
+                    "doubao-seed-2-0-lite-260215": {
+                        "model_name": "doubao-seed-2-0-lite-260215",
+                        "remark": "volcengine/doubao-seed-2-0-lite-260215",
+                        "thinking": {
+                            "enabled": false
+                        },
+                        "context_window": 128000
+                    },
+                    "doubao-1-5-thinking-pro": {
+                        "model_name": "doubao-1-5-thinking-pro-250415",
+                        "remark": "豆包1.5 深度思考模型",
+                        "thinking": {
+                            "enabled": true
+                        }
+                    }
+                }
+            },
+            // 已测试 深度推理模型
+            "zai": {
+                "api_key": "sk-your-custom-key",
+                "api_base": "https://open.bigmodel.cn/api/paas/v4",
+                "models": {
+                    "glm-4.6v": {
+                        "model_name": "glm-4.6v",
+                        "remark": "zai/glm-4.6v 深度思考模型",
+                        "stream": true,
+                        "thinking": {
+                            "enabled": true
+                        }
+                    },
+                    "glm-4.7": {
+                        "model_name": "glm-4.7",
+                        "remark": "zai/glm-4.7"
+                    },
+                    "glm-4.5-air": {
+                        "model_name": "glm-4.5-air",
+                        "remark": "zai/glm-4.5-air",
+                        "thinking": {
+                            "enabled": true
+                        },
+                         "drop_params": false
+                    }
+                }
+            },
+            // 已测试 深度推理模型
+			"deepseek": {
+                "api_key": "sk-your-custom-key",
+                "api_base": "https://api.deepseek.com/chat/completions",
+                "models": {
+                    "deepseek-chat": {
+                        "model_name": "deepseek-chat",
+                        "remark": "deepseek/deepseek-chat"
+                    },
+                    "deepseek-reasoner": {
+                        "model_name": "deepseek-reasoner",
+                        "remark": "deepseek/deepseek-reasoner 深度推理模型",
+                        "thinking": {
+                            "enabled": false,
+                            "mode": "thinking"
+                        }
+                    }
+                }
+            },
+            // 阿里云通义千问
+            "tongyi": {
+                "api_key": "你的通义千问API Key",
+                "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "models": {
+                    "qwen-max": {
+                        "model_name": "qwen-max",
+                        "remark": "通义千问Max"
+                    },
+                    "qwen-plus": {
+                        "model_name": "qwen-plus",
+                        "remark": "通义千问Plus"
+                    },
+                    "qwen3-30b-a3b": {
+                        "model_name": "qwen3-30b-a3b",
+                        "remark": "Qwen3 思考模型",
+                        "thinking": {
+                            "enabled": true
+                        }
+                    }
+                }
+            },
+            // Anthropic Claude
+            "anthropic": {
+                "api_key": "你的Anthropic API Key",
+                "api_base": "",
+                "models": {
+                    "claude-3-7-sonnet": {
+                        "model_name": "claude-3-7-sonnet-20250219",
+                        "remark": "Claude 3.7 Sonnet",
+                        "thinking": {
+                            "enabled": true,
+                            "mode": "thinking",
+                            "budget_tokens": 1024
+                        }
+                    },
+                    "claude-opus-4": {
+                        "model_name": "claude-opus-4-20250514",
+                        "remark": "Claude Opus 4",
+                        "thinking": {
+                            "enabled": true,
+                            "mode": "thinking",
+                            "budget_tokens": 4096
+                        }
+                    }
+                }
+            },
+            // Google Gemini
+            "gemini": {
+                "api_key": "你的Google AI API Key",
+                "api_base": "",
+                "models": {
+                    "gemini-2.0-flash": {
+                        "model_name": "gemini-2.0-flash-exp",
+                        "remark": "Gemini 2.0 Flash"
+                    },
+                    "gemini-2.5-pro": {
+                        "model_name": "gemini-2.5-pro-preview-05-06",
+                        "remark": "Gemini 2.5 Pro 思考模型",
+                        "thinking": {
+                            "enabled": true,
+                            "budget_tokens": 2048
+                        }
+                    }
+                }
+            },
+            // 本地Ollama模型
+            "ollama": {
+                "api_key": "",
+                "api_base": "http://127.0.0.1:11434/v1",
+                "models": {
+                    "llama3-8b": {
+                        "model_name": "llama3:8b",
+                        "remark": "本地Llama3 8B"
+                    }
+                }
+            },
+			"lm_studio": {
+                "api_key": "",
+                "api_base": "http://127.0.0.1:1234/v1",
+                "models": {
+                    "qwen3-coder-30b-a3b-instruct": {
+                        "model_name": "qwen3-coder-30b-a3b-instruct",
+                        "remark": "lm_studio/qwen3-coder-30b-a3b-instruct"
+                    },
+                    "qwen3.5-9b": {
+                        "model_name": "qwen3.5-9b",
+                        "remark": "lm_studio/qwen3.5-9b"
+                    },
+                    "qwen3.5-35b-a3b": {
+                        "model_name": "qwen3.5-35b-a3b",
+                        "remark": "lm_studio/qwen3.5-35b-a3b",
+                        "thinking": {
+                            "enabled": false
+                        },
+                        
+                    }
+                }
+            }
+        }
+    },
+    // 对话上下文配置
+    "conversation": {
+        "max_history_rounds": 10,
+        "max_context_tokens": 4000
+    },
+    // 多 Agent 配置
+    "agents": {
+        "default": {
+            "description": "默认通用Agent，处理一般性任务",
+            // "model": "zai/glm-4.7",
+            // "model": "zai/glm-4.5-air",
+            // "model": "zai/glm-4.6v",
+            // "model": "lm_studio/qwen3.5-9b",
+            "model": "lm_studio/qwen3.5-35b-a3b",
+            
+            // "model": "deepseek/deepseek-chat",
+            // "model": "deepseek/deepseek-reasoner",
+            // "model": "volcengine/doubao-seed-2-0-lite-260215",
+            "llm_preset": null,
+            "tools": ["*"],
+            "skills": ["*"],
+            "sub_agents": ["coder"],
+            "system_prompt": null,
+            "max_tool_calls": 20
+        },
+        "coder": {
+            "description": "代码专家Agent，专注于代码编写、审查、调试",
+            // "model": "deepseek/deepseek-coder",
+            "model": "zai/glm-4.6v",
+            "llm_preset": "coder",
+            "tools": ["file.*", "shell.*"],
+            "skills": ["skill-creator"],
+            "sub_agents": [],
+            "system_prompt": "你是一个专业的代码专家，擅长编写高质量代码、代码审查和调试。",
+            "max_tool_calls": 10
+        },
+        "researcher": {
+            "description": "研究Agent，专注于信息搜索和分析",
+            "model": "zai/glm-4.6v",
+            "llm_preset": "researcher",
+            "tools": ["browser.*", "mcp.*"],
+            "skills": ["exa-web-search-free", "commodities-quote"],
+            "sub_agents": [],
+            "system_prompt": "你是一个专业的研究助手，擅长信息搜索、分析和总结。",
+            "max_tool_calls": 12
+        },
+        "writer": {
+            "description": "写作Agent，专注于文档撰写和内容创作",
+            "model": "zai/glm-4.6v",
+            "llm_preset": "creative",
+            "tools": ["file.*"],
+            "skills": [],
+            "sub_agents": [],
+            "system_prompt": "你是一个专业的写作助手，擅长撰写各类文档和内容创作。",
+            "max_tool_calls": 6
+        }
+    },
+    // 子代理配置
+    "sub_agent_config": {
+        // 是否开启子代理功能
+        "enabled": false,
+        "max_delegation_depth": 1,
+        "timeout": 120,
+        "pass_context": true,
+        "return_summary": true
+    },
+    // API服务配置
+    "api": {
+        "host": "0.0.0.0",
+        "port": 18081,
+        "enable": true
+    },
+    // 功能开关
+    "enable_file_tool": true,
+    "enable_shell_tool": true,
+    "enable_skill_tool": true,
+    "enable_mcp": true,
+    "enable_browser": true,
+    // 浏览器工具配置
+    "browser_headless": false,
+    "browser_stealth": true,
+    "browser_timeout": 30,
+    // 浏览器 Token 优化配置
+    "browser_state_mode": "interactive",
+    "browser_max_elements": 50,
+    "browser_prioritize_visible": true,
+    "browser_max_text_length": 100,
+    "browser_include_page_summary": true,
+    "browser_summary_max_length": 300,
+    // MCP (Model Context Protocol) 配置
+    "mcp": {
+        "servers": {
+            "test-local": {
+                "type": "local",
+                "command": "python",
+                "args": ["test/mcp/test_mcp_server.py"],
+                "description": "测试用本地 MCP 服务，提供 echo/add/get_time/multiply 工具",
+                "enabled": false,
+                "timeout": 60
+            },
+            "example-remote": {
+                "type": "remote",
+                "url": "https://mcp.example.com/mcp",
+                "description": "示例远程 MCP 服务",
+                "enabled": false,
+                "timeout": 60
+            }
+        }
+    },
+    // 工具执行超时时间（秒）- MCP调用需要较长时间
+    "exec_timeout": 60,
+    // 日志配置
+    "log": {
+        "enable_file": false,
+        "log_dir": "./logs",
+        "level": "INFO",
+        "console_level": "DEBUG",
+        "rotation": "10 MB",
+        "retention": "7 days",
+        "enable_console": true
+    },
+    // 会话持久化配置
+    "session": {
+        "enable_persistence": true,
+        "storage_dir": "./sessions",
+        "max_sessions": 100,
+        "expire_days": 30,
+        "auto_save": true,
+        "auto_save_interval": 5
+    },
+    // 机器人平台配置
+    "bot": {
+        "channels": {
+            "feishu": {
+                "enabled": true,
+                "appId": "appid",
+                "appSecret": "appsecret"
+            },
+            "telegram": {
+                "enabled": false,
+                "token": "YOUR_BOT_TOKEN",
+                "proxy": ""
+            },
+            "qq": {
+                "enabled": false,
+                "ws_url": "ws://localhost:3001",
+                "access_token": ""
+            },
+            "discord": {
+                "enabled": false,
+                "token": "YOUR_BOT_TOKEN"
+            },
+            "wecom": {
+                "enabled": false,
+                "corp_id": "YOUR_CORP_ID",
+                "agent_id": "YOUR_AGENT_ID",
+                "secret": "YOUR_SECRET"
+            },
+            "dingtalk": {
+                "enabled": false,
+                "app_key": "YOUR_APP_KEY",
+                "app_secret": "YOUR_APP_SECRET"
+            },
+            "slack": {
+                "enabled": false,
+                "bot_token": "xoxb-xxx",
+                "app_token": "xapp-xxx"
+            }
+        }
+    }
+}
