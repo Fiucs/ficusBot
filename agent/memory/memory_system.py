@@ -26,6 +26,7 @@
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
+import json
 import json5
 import uuid
 import asyncio
@@ -658,11 +659,11 @@ class MemorySystem:
             return json5.load(f)
     
     def _write_tool_index(self, data: Dict):
-        """写入工具索引 JSON 文件"""
+        """写入工具索引 JSON 文件（标准 JSON 格式）"""
         data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         index_file = self.index_path / "tool_index.json"
         with open(index_file, "w", encoding="utf-8") as f:
-            json5.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
     
     def _read_memory_index(self) -> Dict:
         """读取记忆索引 JSON 文件（支持 JSON5 格式）"""
@@ -674,11 +675,11 @@ class MemorySystem:
             return json5.load(f)
     
     def _write_memory_index(self, data: Dict):
-        """写入记忆索引 JSON 文件"""
+        """写入记忆索引 JSON 文件（标准 JSON 格式）"""
         data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         index_file = self.index_path / "memory_index.json"
         with open(index_file, "w", encoding="utf-8") as f:
-            json5.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
     
     def process_tools(self, all_tools: List[Dict]) -> Dict[str, Any]:
         """
@@ -688,6 +689,11 @@ class MemorySystem:
         - enabled=false → 从工具列表移除
         - enabled=true, add_to_memory=false → 保留在工具列表
         - enabled=true, add_to_memory=true → 存入记忆索引并移除
+        
+        匹配规则：
+        - name 必须与系统工具名完全一致
+        - skill 类型使用完整名（如 "skill_xxx"）
+        - builtin 类型使用原始名称（如 "file_read"）
         
         Args:
             all_tools: 系统加载的所有工具列表
@@ -813,13 +819,14 @@ class MemorySystem:
         
         当工具查询次数达到 hot_threshold 时，进入候选池。
         从候选池中取前 hot_tool_limit 个转为常驻加载。
+        
+        匹配规则：name 必须与系统工具名完全一致
         """
         data = self._read_tool_index()
         for tool in data.get("tools", []):
             if tool["name"] == tool_name:
                 tool["query_count"] = tool.get("query_count", 0) + 1
                 self._write_tool_index(data)
-                
                 self._update_hot_tools()
                 return
     
@@ -864,7 +871,7 @@ class MemorySystem:
         更新工具配置
         
         Args:
-            name: 工具名称
+            name: 工具名称（必须与系统工具名完全一致）
             enabled: 是否启用
             add_to_memory: 是否加入记忆索引
         
@@ -1080,7 +1087,7 @@ class MemorySystem:
         从索引移除工具
         
         Args:
-            name: 工具名称
+            name: 工具名称（必须与系统工具名完全一致）
         
         Returns:
             是否移除成功
@@ -1088,11 +1095,16 @@ class MemorySystem:
         try:
             if self.tools_table is not None:
                 self.tools_table.delete(f"name = '{name}'")
+            
             data = self._read_tool_index()
+            original_count = len(data["tools"])
             data["tools"] = [t for t in data["tools"] if t["name"] != name]
-            self._write_tool_index(data)
-            logger.info(f"工具已移除: {name}")
-            return True
+            
+            if len(data["tools"]) < original_count:
+                self._write_tool_index(data)
+                logger.info(f"工具已移除: {name}")
+                return True
+            return False
         except Exception as e:
             logger.error(f"移除工具失败: {e}")
             return False
