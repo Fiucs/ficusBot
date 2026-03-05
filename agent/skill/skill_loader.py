@@ -334,9 +334,12 @@ class SkillLoader:
         """
         return list(self.skills.keys())
 
-    def get_skill_list_info(self) -> str:
+    def get_skill_list_info(self, patterns: List[str] = None) -> str:
         """
         获取技能列表信息（用于注入 system prompt）。
+        
+        Args:
+            patterns: 允许的技能模式列表（支持通配符 *），为 None 或 ["*"] 时返回所有技能
         
         返回格式:
             - name: skill-name-1
@@ -347,7 +350,21 @@ class SkillLoader:
         Returns:
             str: 格式化的技能列表字符串
         """
+        import fnmatch
+        
         unique_skills = {skill["name"]: skill for skill in self.skills.values()}
+        
+        if patterns is not None and "*" not in patterns:
+            if not patterns:
+                return ""
+            filtered_skills = {}
+            for skill_name, skill in unique_skills.items():
+                for pattern in patterns:
+                    if fnmatch.fnmatch(skill_name, pattern):
+                        filtered_skills[skill_name] = skill
+                        break
+            unique_skills = filtered_skills
+        
         lines = []
         for skill_name, skill in unique_skills.items():
             description = skill.get("description", "无描述")

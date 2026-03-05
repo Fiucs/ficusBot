@@ -1,0 +1,59 @@
+{
+    // ==========================================
+    // 工具索引文件 - 管理所有工具的注册和配置
+    // 不写默认开启工具但是不加入记忆索引
+    // ==========================================
+    // 
+    // 字段说明：
+    //   name: 工具名称（唯一标识）
+    //   tool_type: 工具类型 - builtin(内置) / mcp_server(MCP服务) / skill(技能)
+    //   source: 工具来源路径（仅skill类型）
+    //   mcp_server: MCP服务名称（仅mcp_server类型）
+    //   enabled: 是否启用（false则从工具列表移除）
+    //   add_to_memory: 是否加入记忆索引（true则按需加载，减少token消耗）
+    //   query_count: 查询次数（达到hot_threshold自动转为始终加载）
+    //
+    // ==========================================
+    
+    "version": "1.0",
+    "updated_at": "2026-03-05 15:30:00",
+    "tools": [
+        // 示例：技能工具
+        // {
+        //     "name": "web-search",
+        //     "tool_type": "skill",
+        //     "source": "skills/web-search.md",
+        //     "enabled": true,
+        //     "add_to_memory": true,
+        //     "query_count": 0
+        // },
+        // 
+        // 示例：MCP服务工具
+        // {
+        //     "name": "filesystem",
+        //     "tool_type": "mcp_server",
+        //     "mcp_server": "filesystem-server",
+        //     "enabled": true,
+        //     "add_to_memory": false,
+        //     "query_count": 5
+        // },
+        // 
+        // 示例：内置工具
+        // {
+        //     "name": "file_read",
+        //     "tool_type": "builtin",
+        //     "enabled": true,
+        //     "add_to_memory": false,
+        //     "query_count": 15
+        // },
+        // 
+        // 示例：禁用的工具
+        // {
+        //     "name": "deprecated-tool",
+        //     "tool_type": "skill",
+        //     "enabled": false,
+        //     "add_to_memory": true,
+        //     "query_count": 0
+        // }
+    ]
+}

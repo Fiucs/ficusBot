@@ -28,6 +28,10 @@ playwright>=1.40.0
 python-telegram-bot>=21.0
 websockets>=12.0
 
+# 记忆系统依赖
+lancedb>=0.3.0
+sentence-transformers>=2.2.0
+
 # 可选依赖 (增强功能)
 # h11==0.14.0  # uvicorn 的依赖，会自动安装
 # starlette>=0.27.0  # fastapi 的依赖，会自动安装

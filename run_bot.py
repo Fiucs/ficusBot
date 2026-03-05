@@ -219,6 +219,11 @@ def main():
     
     解析命令行参数并启动 Bot 网关
     """
+        # 在最开始设置 CLAWHUB_WORKDIR
+    from agent.config.configloader import GLOBAL_CONFIG
+    workspace_root = GLOBAL_CONFIG.get("workspace_root", "./workspace")
+    os.environ["CLAWHUB_WORKDIR"] = os.path.abspath(workspace_root)
+    
     parser = argparse.ArgumentParser(
         description="FicusBot 多平台机器人网关",
         formatter_class=argparse.RawDescriptionHelpFormatter,

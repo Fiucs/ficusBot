@@ -135,6 +135,119 @@
   },
 
   // ==========================================
+  // 记忆系统工具
+  // 用于存储和检索长期记忆
+  // ==========================================
+  "memory_tools": [
+    {
+      "name": "save_memory",
+      "description": "Save important info to long-term memory. Store user preferences, facts, task results. Params: content(required), memory_type(optional: conversation/fact/preference/task/insight/document), importance(optional: 1-10), tags(optional). Ex: save_memory({content:'User prefers Chinese', memory_type:'preference', importance:8})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "content": {"type": "string", "description": "要保存的记忆内容，应简洁明了"},
+          "memory_type": {
+            "type": "string",
+            "enum": ["conversation", "fact", "preference", "task", "insight", "document"],
+            "description": "记忆类型",
+            "default": "conversation"
+          },
+          "importance": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "重要性评分，1-10，默认5",
+            "default": 5
+          },
+          "tags": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "标签列表"
+          }
+        },
+        "required": ["content"]
+      }
+    },
+    {
+      "name": "search_memory",
+      "description": "Search long-term memory for related info. Find user preferences, facts, tools. Params: query(required), search_type(optional: all/memory/tool), top_k(optional). Ex: search_memory({query:'user language preference', search_type:'memory'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "搜索查询，使用自然语言描述要查找的内容"},
+          "search_type": {
+            "type": "string",
+            "enum": ["all", "memory", "tool"],
+            "description": "搜索范围：all(全部), memory(仅记忆), tool(仅工具)",
+            "default": "all"
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "返回结果数量，默认10",
+            "default": 10
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "delete_memory",
+      "description": "Delete a specific memory by ID. Params: memory_id(required). Ex: delete_memory({memory_id:'abc123'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "memory_id": {"type": "string", "description": "要删除的记忆ID"}
+        },
+        "required": ["memory_id"]
+      }
+    },
+    {
+      "name": "register_tool",
+      "description": "Register new tool to tool index. Use when creating new skills or discovering tools to index. Params: name(required), description(required), tool_type(required: skill/mcp_server/builtin), source(optional), enabled(optional), add_to_memory(optional). Ex: register_tool({name:'web-search', description:'Search web', tool_type:'skill'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "工具名称，唯一标识"},
+          "description": {"type": "string", "description": "工具功能描述，用于语义搜索匹配"},
+          "tool_type": {
+            "type": "string",
+            "enum": ["skill", "mcp_server", "builtin"],
+            "description": "工具类型"
+          },
+          "source": {"type": "string", "description": "工具来源路径或标识"},
+          "enabled": {"type": "boolean", "description": "是否启用，默认true", "default": true},
+          "add_to_memory": {"type": "boolean", "description": "是否加入记忆索引（语义搜索），默认true", "default": true}
+        },
+        "required": ["name", "description", "tool_type"]
+      }
+    },
+    {
+      "name": "unregister_tool",
+      "description": "Remove tool from tool index. Params: name(required). Ex: unregister_tool({name:'deprecated-skill'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "要移除的工具名称"}
+        },
+        "required": ["name"]
+      }
+    },
+    {
+      "name": "update_tool_config",
+      "description": "Update tool configuration like enabled status or memory index settings. Params: name(required), enabled(optional), add_to_memory(optional). Ex: update_tool_config({name:'web-search', add_to_memory:false})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "工具名称"},
+          "enabled": {"type": "boolean", "description": "是否启用"},
+          "add_to_memory": {"type": "boolean", "description": "是否加入记忆索引"}
+        },
+        "required": ["name"]
+      }
+    }
+  ],
+
+  // ==========================================
   // 浏览器操作工具
   // 对应 BrowserTool 类中的方法
   // ==========================================

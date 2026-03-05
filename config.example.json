@@ -1,6 +1,6 @@
 {
     // 基础路径配置
-    "workspace_root": "C:\\Users\\Administrator\\workspace",
+    "workspace_root": "./workspace",
     // 文件操作白名单：仅允许访问这些目录（为空则不限制）
     "file_allow_list": [
     ],
@@ -63,21 +63,21 @@
         },
         // 厂商分组配置，key为LiteLLM标准厂商前缀
         "providers": {
-			 "custom": {
-				"api_key": "sk-your-custom-key",
-				"api_base": "https://api.my-company.com/v1",
-				"models": {
-					"my-llm": {
-					"remark": "my-llm"
-							},
-					"my-llm-large": {
-						"remark": "my-llm-large"
-            }
-        }
-    },
+            "custom": {
+                "api_key": "your-custom-api-key",
+                "api_base": "https://api.my-company.com/v1",
+                "models": {
+                    "my-llm": {
+                        "remark": "my-llm"
+                    },
+                    "my-llm-large": {
+                        "remark": "my-llm-large"
+                    }
+                }
+            },
             // OpenAI官方
             "openai": {
-                "api_key": "你的OpenAI API Key",
+                "api_key": "your-openai-api-key",
                 "api_base": "",
                 "models": {
                     "gpt35": {
@@ -92,12 +92,12 @@
                             "mode": "reasoning_effort",
                             "effort": "medium"
                         }
-                    },
+                    }
                 }
             },
-            // 已测试 深度推理模型
+            // 火山引擎 豆包
             "volcengine": {
-                "api_key": "sk-your-custom-key",
+                "api_key": "your-volcengine-api-key",
                 "api_base": "",
                 "models": {
                     "doubao-seed-2-0-pro-260215": {
@@ -122,9 +122,9 @@
                     }
                 }
             },
-            // 已测试 深度推理模型
+            // 智谱 AI
             "zai": {
-                "api_key": "sk-your-custom-key",
+                "api_key": "your-zhipu-api-key",
                 "api_base": "https://open.bigmodel.cn/api/paas/v4",
                 "models": {
                     "glm-4.6v": {
@@ -145,13 +145,13 @@
                         "thinking": {
                             "enabled": true
                         },
-                         "drop_params": false
+                        "drop_params": false
                     }
                 }
             },
-            // 已测试 深度推理模型
-			"deepseek": {
-                "api_key": "sk-your-custom-key",
+            // DeepSeek
+            "deepseek": {
+                "api_key": "your-deepseek-api-key",
                 "api_base": "https://api.deepseek.com/chat/completions",
                 "models": {
                     "deepseek-chat": {
@@ -170,7 +170,7 @@
             },
             // 阿里云通义千问
             "tongyi": {
-                "api_key": "你的通义千问API Key",
+                "api_key": "your-tongyi-api-key",
                 "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "models": {
                     "qwen-max": {
@@ -192,7 +192,7 @@
             },
             // Anthropic Claude
             "anthropic": {
-                "api_key": "你的Anthropic API Key",
+                "api_key": "your-anthropic-api-key",
                 "api_base": "",
                 "models": {
                     "claude-3-7-sonnet": {
@@ -217,7 +217,7 @@
             },
             // Google Gemini
             "gemini": {
-                "api_key": "你的Google AI API Key",
+                "api_key": "your-google-api-key",
                 "api_base": "",
                 "models": {
                     "gemini-2.0-flash": {
@@ -245,7 +245,8 @@
                     }
                 }
             },
-			"lm_studio": {
+            // LM Studio 本地模型
+            "lm_studio": {
                 "api_key": "",
                 "api_base": "http://127.0.0.1:1234/v1",
                 "models": {
@@ -262,8 +263,7 @@
                         "remark": "lm_studio/qwen3.5-35b-a3b",
                         "thinking": {
                             "enabled": false
-                        },
-                        
+                        }
                     }
                 }
             }
@@ -278,15 +278,7 @@
     "agents": {
         "default": {
             "description": "默认通用Agent，处理一般性任务",
-            // "model": "zai/glm-4.7",
-            // "model": "zai/glm-4.5-air",
-            // "model": "zai/glm-4.6v",
-            // "model": "lm_studio/qwen3.5-9b",
-            "model": "lm_studio/qwen3.5-35b-a3b",
-            
-            // "model": "deepseek/deepseek-chat",
-            // "model": "deepseek/deepseek-reasoner",
-            // "model": "volcengine/doubao-seed-2-0-lite-260215",
+            "model": "zai/glm-4.7",
             "llm_preset": null,
             "tools": ["*"],
             "skills": ["*"],
@@ -296,7 +288,6 @@
         },
         "coder": {
             "description": "代码专家Agent，专注于代码编写、审查、调试",
-            // "model": "deepseek/deepseek-coder",
             "model": "zai/glm-4.6v",
             "llm_preset": "coder",
             "tools": ["file.*", "shell.*"],
@@ -328,7 +319,6 @@
     },
     // 子代理配置
     "sub_agent_config": {
-        // 是否开启子代理功能
         "enabled": false,
         "max_delegation_depth": 1,
         "timeout": 120,
@@ -399,13 +389,51 @@
         "auto_save": true,
         "auto_save_interval": 5
     },
+    // 记忆系统配置
+    "memory": {
+        "enabled": true,
+        "db_path": "{workspace_root}/memory/vector_db",
+        "index_path": "{workspace_root}/memory/memory_index",
+        // 热点工具配置
+        // hot_threshold: 查询次数达到此值进入候选池
+        // hot_tool_limit: 从候选池中取前 N 个转为常驻加载
+        "hot_threshold": 100,
+        // 0 意味着永远不会有工具转为常驻
+        "hot_tool_limit": 5,
+        "embedding": {
+            // 嵌入服务提供者: local / openai / zhipu / qwen / deepseek / custom
+            "provider": "local",
+            // 本地模型配置
+            // 支持 HuggingFace 格式（自动下载）和 GGUF 格式（本地文件）
+            // HuggingFace 推荐模型：
+            // - BAAI/bge-small-zh-v1.5: 最轻量（~100MB），CPU可跑
+            // - BAAI/bge-m3: 平衡选择（~2GB），多语言支持
+            // - Qwen/Qwen3-Embedding-0.6B: 中文最优（~1.2GB）
+            // GGUF 推荐模型（需下载到本地）：
+            // - Qwen3-Embedding-0.6B-Q8_0.gguf: 中文嵌入模型
+            // - nomic-embed-text-v1.5.Q4_K_M.gguf: 英文嵌入模型
+            "local_model": "BAAI/bge-small-zh-v1.5",
+            // 自定义模型缓存目录（可选，默认使用系统缓存）
+            // 支持 {workspace_root} 变量，例如："{workspace_root}/models/huggingface"
+            "cache_folder": "{workspace_root}/models/huggingface",
+            // API 模型配置（provider 非 local 时使用）
+            "api_key": "",
+            "model": "text-embedding-3-small",
+            // 自定义 API 地址（provider=custom 时使用）
+            "base_url": ""
+        },
+        "search": {
+            "default_top_k": 10,
+            "min_score": 0.5
+        }
+    },
     // 机器人平台配置
     "bot": {
         "channels": {
             "feishu": {
-                "enabled": true,
-                "appId": "appid",
-                "appSecret": "appsecret"
+                "enabled": false,
+                "appId": "cli_your_app_id",
+                "appSecret": "your_app_secret"
             },
             "telegram": {
                 "enabled": false,

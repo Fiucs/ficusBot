@@ -423,6 +423,11 @@ workspace/skills/
 
 大模型在第一轮对话即可知道有哪些可用技能。
 
+
+## clawhub的使用
+clawhub search (技能名称)
+clawhub install weather --workdir 工作区目录（workspace）
+
 ## 配置说明
 
 ### 多Agent架构
@@ -698,41 +703,44 @@ AGENT_REGISTRY.register_agent(config)
 
 模型参数支持**四层配置**，优先级从高到低：
 
-| 层级 | 配置位置 | 说明 |
-|------|---------|------|
-| 1. 预设级别 | `llm.agent_presets.{preset_name}` | Agent 专用预设，最高优先级 |
-| 2. 模型级别 | `llm.providers.{vendor}.models.{model}` | 针对特定模型 |
-| 3. 厂商级别 | `llm.providers.{vendor}` | 针对厂商下所有模型 |
-| 4. 全局级别 | `llm.global` | 默认值，所有模型继承 |
+
+| 层级        | 配置位置                                | 说明                       |
+| ----------- | --------------------------------------- | -------------------------- |
+| 1. 预设级别 | `llm.agent_presets.{preset_name}`       | Agent 专用预设，最高优先级 |
+| 2. 模型级别 | `llm.providers.{vendor}.models.{model}` | 针对特定模型               |
+| 3. 厂商级别 | `llm.providers.{vendor}`                | 针对厂商下所有模型         |
+| 4. 全局级别 | `llm.global`                            | 默认值，所有模型继承       |
 
 **配置合并顺序**：`global` → `provider` → `model` → `preset`，后者覆盖前者。
 
 **支持的参数**：
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `temperature` | float | 0.3 | 控制输出随机性 (0-1)，0=确定性，1=创造性 |
-| `max_tokens` | int | 8096 | 单次回复最大 token 数 |
-| `context_window` | int | 128000 | 模型上下文窗口大小（输入+输出总容量） |
-| `timeout` | int | 60 | API 请求超时时间（秒） |
-| `stream` | bool | false | 是否启用流式输出 |
-| `drop_params` | bool | true | 是否自动丢弃模型不支持的参数 |
-| `thinking` | object | - | 思考模式配置（部分模型支持） |
+
+| 参数             | 类型   | 默认值 | 说明                                     |
+| ---------------- | ------ | ------ | ---------------------------------------- |
+| `temperature`    | float  | 0.3    | 控制输出随机性 (0-1)，0=确定性，1=创造性 |
+| `max_tokens`     | int    | 8096   | 单次回复最大 token 数                    |
+| `context_window` | int    | 128000 | 模型上下文窗口大小（输入+输出总容量）    |
+| `timeout`        | int    | 60     | API 请求超时时间（秒）                   |
+| `stream`         | bool   | false  | 是否启用流式输出                         |
+| `drop_params`    | bool   | true   | 是否自动丢弃模型不支持的参数             |
+| `thinking`       | object | -      | 思考模式配置（部分模型支持）             |
 
 ### thinking 参数详解
 
 `thinking` 参数用于启用模型的深度思考/推理模式，不同厂商有不同的参数格式：
 
-| 厂商 | 参数格式 | 配置示例 |
-|------|---------|---------|
-| **智谱 GLM** | `extra_body.thinking` | `{"enabled": true}` |
-| **DeepSeek** | `extra_body.thinking` | `{"enabled": true}` |
-| **豆包/火山** | `extra_body.thinking` | `{"enabled": true}` |
-| **阿里千问** | `extra_body.enable_thinking` | `true` |
-| **LM Studio** | `extra_body.enable_thinking` | `true` |
-| **Gemini** | `thinking_budget` | `1024` (token数) |
-| **Claude** | 顶层 `thinking` | `{"type": "enabled", "budget_tokens": 1024}` |
-| **OpenAI o系列** | `reasoning_effort` | `"low"` / `"medium"` / `"high"` |
+
+| 厂商             | 参数格式                     | 配置示例                                     |
+| ---------------- | ---------------------------- | -------------------------------------------- |
+| **智谱 GLM**     | `extra_body.thinking`        | `{"enabled": true}`                          |
+| **DeepSeek**     | `extra_body.thinking`        | `{"enabled": true}`                          |
+| **豆包/火山**    | `extra_body.thinking`        | `{"enabled": true}`                          |
+| **阿里千问**     | `extra_body.enable_thinking` | `true`                                       |
+| **LM Studio**    | `extra_body.enable_thinking` | `true`                                       |
+| **Gemini**       | `thinking_budget`            | `1024` (token数)                             |
+| **Claude**       | 顶层`thinking`               | `{"type": "enabled", "budget_tokens": 1024}` |
+| **OpenAI o系列** | `reasoning_effort`           | `"low"` / `"medium"` / `"high"`              |
 
 **配置示例**：
 
@@ -925,6 +933,9 @@ ficusbot/
 │   ├── storage/        # 会话存储
 │   ├── tui/            # TUI 终端界面
 │   ├── mcp/            # MCP 协议模块
+│   ├── memory/         # 记忆系统模块
+│   │   ├── __init__.py
+│   │   └── memory_system.py  # 统一记忆系统
 │   ├── server/         # 统一服务模块
 │   │   ├── gateway.py          # 统一网关
 │   │   ├── bot/                # Bot 子模块
@@ -964,32 +975,45 @@ ficusbot/
 - [配置中心](./DOCS.MD#1-配置中心)
 - [工具系统](./DOCS.MD#2-工具系统)
 - [核心 Agent](./DOCS.MD#3-核心-agent)
-- [会话持久化](./DOCS.MD#8-会话持久化系统)
-- [日志系统](./DOCS.MD#9-日志系统)
-- [MCP 协议模块](./DOCS.MD#11-mcp-model-context-protocol-模块)
+- [会话持久化](./DOCS.MD#9-会话持久化系统)
+- [日志系统](./DOCS.MD#10-日志系统)
+- [MCP 协议模块](./DOCS.MD#12-mcp-model-context-protocol-模块)
 - [Bot 多平台适配器](./DOCS.MD#12-bot-多平台适配器模块)
+- [记忆系统](./DOCS.MD#15-记忆系统)
 
 ## 已完成功能
 
-- [ ]  ✅ 多模型支持（OpenAI、通义千问、Ollama 本地模型）
-- [ ]  ✅ 多 Agent 架构（子代理委托、懒加载）
-- [ ]  ✅ ReAct 提示词框架 + 系统提示词外部化
-- [ ]  ✅ 会话持久化（TinyDB）+ 日志系统（loguru）
-- [ ]  ✅ 文件系统工具（读、写、删、搜索等）
-- [ ]  ✅ Shell 命令执行（白名单/黑名单保护）
-- [ ]  ✅ 技能系统（Markdown 格式定义）
-- [ ]  ✅ MCP 协议支持 + 浏览器自动化（browser-use）
-- [ ]  ✅ 多平台 Bot 网关（Telegram、飞书、Discord、QQ、企业微信、钉钉、Slack）
-- [ ]  ✅ Bot 命令系统（`/help`、`/new`、`/sessions`、`/clear`、`/models`、`/switch`、`/reload`）
-- [ ]  ✅ HTTP API 模块（FastAPI）+ 拦截器系统（权限验证、限流、敏感词过滤）
-- [ ]  ✅ 安全控制（文件/Shell/路径 白名单黑名单）
-- [ ]  长记忆对话，工具使用
+- [x]  ✅ 多模型支持（OpenAI、通义千问、Ollama 本地模型）
+- [x]  ✅ 多 Agent 架构（子代理委托、懒加载）
+- [x]  ✅ ReAct 提示词框架 + 系统提示词外部化
+- [x]  ✅ 会话持久化（TinyDB）+ 日志系统（loguru）
+- [x]  ✅ 文件系统工具（读、写、删、搜索等）
+- [x]  ✅ Shell 命令执行（白名单/黑名单保护）
+- [x]  ✅ 技能系统（Markdown 格式定义）
+- [x]  ✅ MCP 协议支持 + 浏览器自动化（browser-use）
+- [x]  ✅ 多平台 Bot 网关（Telegram、飞书、Discord、QQ、企业微信、钉钉、Slack）
+- [x]  ✅ Bot 命令系统（`/help`、`/new`、`/sessions`、`/clear`、`/models`、`/switch`、`/reload`）
+- [x]  ✅ HTTP API 模块（FastAPI）+ 拦截器系统（权限验证、限流、敏感词过滤）
+- [x]  ✅ 安全控制（文件/Shell/路径 白名单黑名单）
+- [x]  ✅ 记忆系统（向量数据库 + 语义搜索 + 工具库管理）
 - [ ]  视觉化操作 Agent S3或者 [UI-TARS-desktop](https://github.com/bytedance/UI-TARS-desktop)
 - [ ]  web UI 界面
 
 详细开发计划请参阅 [plan.MD](./plan.MD)
 
 ## 最近更新
+
+### 2026-03-05
+
+- **记忆系统上线**：新增 `agent/memory/` 模块，提供长记忆存储和语义搜索能力
+  - **向量数据库**：基于 LanceDB 实现高效的向量存储和检索
+  - **语义搜索**：支持自然语言查询相关记忆和工具
+  - **工具库管理**：通过 JSON5 索引文件管理工具的注册和配置
+  - **热点工具统计**：自动追踪工具使用频率，高频工具自动转为常驻加载
+  - **多嵌入模型支持**：支持 HuggingFace、GGUF、API 三种嵌入模型格式
+  - **动态维度检测**：自动检测嵌入模型向量维度，无需手动配置
+- **索引文件格式**：采用 JSON5 格式，支持 `//` 注释，便于维护
+- **配置项新增**：`memory.enabled`, `memory.db_path`, `memory.index_path`, `memory.hot_threshold`, `memory.embedding`
 
 ### 2026-03-04
 

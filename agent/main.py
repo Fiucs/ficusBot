@@ -286,7 +286,8 @@ class Agent:
         if agent_config and agent_config.system_prompt:
             self.conversation.custom_system_prompt = agent_config.system_prompt
         
-        skill_list_str = self.skill_loader.get_skill_list_info()
+        skill_patterns = agent_config.skills if agent_config else None
+        skill_list_str = self.skill_loader.get_skill_list_info(skill_patterns)
         self.conversation.inject_skill_list(skill_list_str)
         
         if agent_config and agent_config.model:
@@ -409,7 +410,8 @@ class Agent:
         self.llm_client.reload_config()
         self.conversation.reload_prompt()
         
-        skill_list_str = self.skill_loader.get_skill_list_info()
+        skill_patterns = self.agent_config.skills if self.agent_config else None
+        skill_list_str = self.skill_loader.get_skill_list_info(skill_patterns)
         self.conversation.inject_skill_list(skill_list_str)
         
         self._init_mcp()
@@ -483,7 +485,7 @@ class Agent:
         说明:
             - 如果指定了技能，该技能工具会被放在列表第一位（优先级最高）
             - 其他所有工具（包括其他技能工具）都会保留
-            - 根据Agent配置过滤可用工具
+            - 根据Agent配置过滤可用工具和技能
             - 添加子代理工具（如果配置了sub_agents）
         """
         tools = self.tool_adapter.list_tools()
@@ -491,6 +493,9 @@ class Agent:
         if self.agent_config:
             allowed_patterns = self.agent_config.tools
             tools = self._filter_tools(tools, allowed_patterns)
+            
+            skill_patterns = self.agent_config.skills
+            tools = self._filter_skills(tools, skill_patterns)
         
         if not skill_name:
             skill_name = self._detect_skill_from_input(None)
@@ -522,7 +527,7 @@ class Agent:
     
     def _filter_tools(self, tools: List[Dict], patterns: List[str]) -> List[Dict]:
         """
-        根据模式过滤工具
+        根据模式过滤工具（非技能工具）。
         
         Args:
             tools: 所有工具列表
@@ -530,6 +535,10 @@ class Agent:
             
         Returns:
             过滤后的工具列表
+            
+        说明:
+            - 此方法只过滤非技能工具（不以 skill_ 开头的工具）
+            - 技能工具由 _filter_skills 方法单独处理
         """
         import fnmatch
         
@@ -540,11 +549,57 @@ class Agent:
         for tool in tools:
             tool_name = tool.get("function", {}).get("name", "")
             
+            if tool_name.startswith("skill_"):
+                filtered.append(tool)
+                continue
+            
             for pattern in patterns:
                 if pattern == "*":
                     filtered.append(tool)
                     break
                 elif fnmatch.fnmatch(tool_name, pattern):
+                    filtered.append(tool)
+                    break
+        
+        return filtered
+    
+    def _filter_skills(self, tools: List[Dict], patterns: List[str]) -> List[Dict]:
+        """
+        根据模式过滤技能工具。
+        
+        Args:
+            tools: 所有工具列表
+            patterns: 允许的技能模式列表（支持通配符 *）
+            
+        Returns:
+            过滤后的工具列表
+            
+        说明:
+            - 此方法只过滤技能工具（以 skill_ 开头的工具）
+            - patterns 匹配技能名称（不含 skill_ 前缀）
+            - ["*"] 表示允许所有技能
+            - [] 表示不允许任何技能
+        """
+        import fnmatch
+        
+        if not patterns or "*" in patterns:
+            return tools
+        
+        filtered = []
+        for tool in tools:
+            tool_name = tool.get("function", {}).get("name", "")
+            
+            if not tool_name.startswith("skill_"):
+                filtered.append(tool)
+                continue
+            
+            skill_name = tool_name[6:]
+            
+            for pattern in patterns:
+                if pattern == "*":
+                    filtered.append(tool)
+                    break
+                elif fnmatch.fnmatch(skill_name, pattern):
                     filtered.append(tool)
                     break
         

@@ -70,6 +70,10 @@ def main():
     from agent.config.configloader import GLOBAL_CONFIG
     from agent.main import get_app
     import uvicorn
+    # 在最开始设置 CLAWHUB_WORKDIR
+    from agent.config.configloader import GLOBAL_CONFIG
+    workspace_root = GLOBAL_CONFIG.get("workspace_root", "./workspace")
+    os.environ["CLAWHUB_WORKDIR"] = os.path.abspath(workspace_root)
     
     # 启动指定的 Agent
     if args.all_agents:
