@@ -885,13 +885,16 @@ class Agent:
             
             tool_result = self.tool_adapter.call_tool(tool_name, arguments)
             
-            # 如果是 search_memory 且返回了记忆，自动注入到 system prompt
+            # 如果是 search_memory 且返回成功，自动注入到 system prompt（包括空结果）
             if tool_name == "search_memory" and tool_result.get("status") == "success":
                 data = tool_result.get("data", {})
                 memories = data.get("memories", [])
+                # 即使是空列表也调用 inject_memories，确保占位符被替换
+                self.conversation.inject_memories(memories)
                 if memories:
-                    self.conversation.inject_memories(memories)
                     logger.info(f"{Fore.CYAN}[记忆注入] 已将 {len(memories)} 条记忆注入到 system prompt{Style.RESET_ALL}")
+                else:
+                    logger.info(f"{Fore.CYAN}[记忆注入] 查询结果为空，已清理记忆占位符{Style.RESET_ALL}")
             
             tool_elapsed = time.time() - tool_start_time
             result_status = tool_result.get("status", "unknown")

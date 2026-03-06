@@ -140,17 +140,26 @@ class ConversationManager:
     def _init_system_prompt(self):
         """
         初始化系统提示词（仅在需要时调用一次）。
+        
+        同时初始化所有占位符的默认值，避免 LM Studio 的 Jinja 模板解析错误。
         """
         if not self._base_system_prompt:
             self._base_system_prompt = self._build_system_prompt()
             self.system_prompt = self._base_system_prompt
+        
+        # 初始化时替换 INJECTED_MEMORY_LIST 占位符为默认值
+        # 避免 LM Studio 的 Jinja 模板解析 {xxx} 格式时报错
+        placeholder = "{INJECTED_MEMORY_LIST}"
+        if placeholder in self.system_prompt:
+            self.system_prompt = self.system_prompt.replace(placeholder, "_暂无已保存的记忆_")
+            logger.debug(f"[系统提示词] 已初始化 INJECTED_MEMORY_LIST 占位符")
 
     def reload_prompt(self) -> bool:
         """
         重新加载系统提示词（热加载）。
         
         从 prompts.md 文件重新读取提示词，无需重启程序。
-        保留已注入的技能文档。
+        保留已注入的技能文档和记忆。
         
         Returns:
             bool: 重载是否成功
@@ -171,6 +180,17 @@ class ConversationManager:
                             self.system_prompt = self.system_prompt + "\n" + injected_content
                 else:
                     self.system_prompt = self._base_system_prompt
+                
+                # 处理记忆占位符
+                memory_placeholder = "{INJECTED_MEMORY_LIST}"
+                if self._injected_memories:
+                    memory_content = self._format_memories(self._injected_memories)
+                    if memory_placeholder in self.system_prompt:
+                        self.system_prompt = self.system_prompt.replace(memory_placeholder, memory_content)
+                else:
+                    # 没有注入的记忆时，替换为默认值
+                    if memory_placeholder in self.system_prompt:
+                        self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
                 
                 logger.info(f"[系统提示词] 热加载完成，长度: {len(self.system_prompt)} 字符")
                 return True
@@ -378,6 +398,10 @@ class ConversationManager:
                         
                         if not self._injected_skills:
                             self.system_prompt = self._base_system_prompt
+                            # 处理记忆占位符
+                            memory_placeholder = "{INJECTED_MEMORY_LIST}"
+                            if memory_placeholder in self.system_prompt:
+                                self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
                         
                         logger.info(f"{Fore.CYAN}清理指定技能文档: {skill_name}, 剩余注入技能: {self._injected_skills}{Style.RESET_ALL}")
                     return True
@@ -387,6 +411,10 @@ class ConversationManager:
                         self._injected_skills.clear()
 
                     self.system_prompt = self._base_system_prompt
+                    # 处理记忆占位符
+                    memory_placeholder = "{INJECTED_MEMORY_LIST}"
+                    if memory_placeholder in self.system_prompt:
+                        self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
                     return True
             except Exception as e:
                 logger.error(f"{Fore.RED}清理技能文档失败: {str(e)}{Style.RESET_ALL}")
@@ -420,22 +448,21 @@ class ConversationManager:
         Returns:
             bool: 注入是否成功
         """
-        if not memories:
-            return True
-        
         with self._lock:
             try:
-                # 合并新记忆到已注入的记忆列表（去重）
-                existing_ids = {m.get("id") for m in self._injected_memories if m.get("id")}
-                for memory in memories:
-                    memory_id = memory.get("id")
-                    if memory_id and memory_id not in existing_ids:
-                        self._injected_memories.append(memory)
-                    elif not memory_id:
-                        # 无 ID 的记忆直接添加
-                        self._injected_memories.append(memory)
+                # 即使 memories 为空，也需要处理占位符
+                if memories:
+                    # 合并新记忆到已注入的记忆列表（去重）
+                    existing_ids = {m.get("id") for m in self._injected_memories if m.get("id")}
+                    for memory in memories:
+                        memory_id = memory.get("id")
+                        if memory_id and memory_id not in existing_ids:
+                            self._injected_memories.append(memory)
+                        elif not memory_id:
+                            # 无 ID 的记忆直接添加
+                            self._injected_memories.append(memory)
                 
-                # 格式化记忆内容
+                # 格式化记忆内容（空列表时返回 "_暂无已保存的记忆_"）
                 memory_content = self._format_memories(self._injected_memories)
                 
                 # 替换占位符
@@ -456,7 +483,8 @@ class ConversationManager:
                         logger.warning(f"{Fore.YELLOW}未找到记忆注入标记{Style.RESET_ALL}")
                         return False
                 
-                logger.info(f"{Fore.CYAN}记忆已注入: {len(memories)} 条新记忆, 当前共 {len(self._injected_memories)} 条{Style.RESET_ALL}")
+                if memories:
+                    logger.info(f"{Fore.CYAN}记忆已注入: {len(memories)} 条新记忆, 当前共 {len(self._injected_memories)} 条{Style.RESET_ALL}")
                 return True
                 
             except Exception as e:
@@ -574,7 +602,14 @@ class ConversationManager:
         with self._lock:
             self.history = []
             self._injected_skills.clear()
+            self._injected_memories.clear()
             self.system_prompt = self._base_system_prompt
+            
+            # 处理记忆占位符
+            memory_placeholder = "{INJECTED_MEMORY_LIST}"
+            if memory_placeholder in self.system_prompt:
+                self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
+                
         return {"status": "success", "message": "对话上下文已清空"}
 
     @property
@@ -630,7 +665,33 @@ class ConversationManager:
             try:
                 data = self._storage.load_session(self._session_id)
                 if data:
-                    self.history = data.get("history", [])
+                    raw_history = data.get("history", [])
+                    
+                    # 过滤无效消息
+                    self.history = []
+                    for msg in raw_history:
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+                        
+                        # 跳过空的 assistant 消息（无内容且无工具调用）
+                        if role == "assistant" and (not content or content.strip() == ""):
+                            if not msg.get("tool_calls"):
+                                logger.debug(f"[会话加载] 跳过空的 assistant 消息")
+                                continue
+                        
+                        # 跳过无 role 的消息
+                        if not role:
+                            continue
+                            
+                        self.history.append(msg)
+                    
+                    # 确保第一条非 system 消息是 user（某些模型模板要求）
+                    if self.history and self.history[0].get("role") != "user":
+                        # 移除开头的非 user 消息
+                        while self.history and self.history[0].get("role") not in ["user", "system"]:
+                            removed = self.history.pop(0)
+                            logger.debug(f"[会话加载] 移除开头的非 user 消息: {removed.get('role')}")
+                    
                     self._injected_skills = set(data.get("injected_skills", []))
                     
                     # _base_system_prompt 始终使用最新代码生成的，不从存储加载
@@ -642,7 +703,12 @@ class ConversationManager:
                         # system_prompt 保持从存储加载的值（包含已注入的技能文档）
                         self.system_prompt = data.get("system_prompt", self._base_system_prompt)
                     
-                    logger.info(f"[会话加载] ID: {self._session_id}, 消息数: {len(self.history)}, 结果: 成功")
+                    # 确保记忆占位符被处理（避免 LM Studio Jinja 模板错误）
+                    memory_placeholder = "{INJECTED_MEMORY_LIST}"
+                    if memory_placeholder in self.system_prompt:
+                        self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
+                    
+                    logger.info(f"[会话加载] ID: {self._session_id}, 原始消息数: {len(raw_history)}, 过滤后: {len(self.history)}, 结果: 成功")
                     return True
                 logger.warning(f"[会话加载] ID: {self._session_id}, 结果: 会话不存在")
                 return False
@@ -668,7 +734,12 @@ class ConversationManager:
                     self._session_id = None
                     self.history = []
                     self._injected_skills.clear()
+                    self._injected_memories.clear()
                     self.system_prompt = self._base_system_prompt
+                    # 处理记忆占位符
+                    memory_placeholder = "{INJECTED_MEMORY_LIST}"
+                    if memory_placeholder in self.system_prompt:
+                        self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
                 return success
             except Exception as e:
                 logger.error(f"会话删除失败: {e}")
@@ -753,7 +824,14 @@ class ConversationManager:
                 self._session_id = new_session_id
                 self.history = []
                 self._injected_skills.clear()
+                self._injected_memories.clear()
                 self.system_prompt = self._base_system_prompt
+                
+                # 处理记忆占位符
+                memory_placeholder = "{INJECTED_MEMORY_LIST}"
+                if memory_placeholder in self.system_prompt:
+                    self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
+                
                 self._storage.set_current_session(new_session_id)
                 
                 logger.info(f"[会话创建] 新会话已创建并激活: {new_session_id}")
@@ -853,6 +931,19 @@ class ConversationManager:
             # 处理最后可能暂存的 assistant
             if pending_assistant is not None:
                 new_history.append(pending_assistant)
+
+            # 确保历史记录以 user 消息开头（某些模型模板要求）
+            if new_history and new_history[0].get("role") != "user":
+                # 尝试从原始历史中找到第一条 user 消息
+                first_user_msg = None
+                for msg in self.history:
+                    if msg.get("role") == "user":
+                        first_user_msg = msg
+                        break
+                
+                if first_user_msg:
+                    new_history.insert(0, first_user_msg)
+                    logger.info(f"{Fore.CYAN}  恢复首条 user 消息以满足模型模板要求{Style.RESET_ALL}")
 
             self.history = new_history
             final_count = len(self.history)
