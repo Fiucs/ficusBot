@@ -139,7 +139,7 @@ class ToolAdapter:
                 all_tool_defs.append({
                     "name": func_name,
                     "func": lambda alias=alias, **kwargs: self.skill_loader.execute(alias, kwargs),
-                    "description": " ",
+                    "description": defi["function"].get("description", ""),
                     "parameters": defi["function"]["parameters"]
                 })
         
@@ -205,20 +205,101 @@ class ToolAdapter:
             logger.error(f"保存记忆失败: {e}")
             return {"status": "error", "message": f"保存记忆失败: {str(e)}"}
     
+    def _register_skill_tool(self, tool_name: str, func_def: Dict[str, Any]) -> bool:
+        """
+        注册单个技能工具到 self.tools
+        
+        Args:
+            tool_name: 工具名称（如 skill_weather）
+            func_def: 工具定义（包含 description、parameters 等）
+        
+        Returns:
+            bool: 是否成功注册
+        """
+        if tool_name in self.tools:
+            return False
+        
+        if not tool_name.startswith("skill_"):
+            return False
+        
+        skill_alias = tool_name[6:]
+        self.tools[tool_name] = {
+            "name": tool_name,
+            "func": lambda skill_alias=skill_alias, **kwargs: self.skill_loader.execute(skill_alias, kwargs),
+            "description": func_def.get("description", ""),
+            "parameters": func_def.get("parameters", {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "输入参数"}
+                }
+            })
+        }
+        return True
+    
     def _search_memory(
         self, 
         query: str, 
         search_type: str = "all", 
         top_k: int = 10
     ) -> Dict[str, Any]:
-        """搜索记忆"""
+        """
+        搜索记忆并动态注册发现的工具
+        
+        当 search_type 为 "tool" 或 "all" 时，会搜索记忆索引中的工具，
+        并将发现的工具动态注册到 tool_adapter.tools 中，使其可被直接调用。
+        
+        流程：
+        1. 搜索记忆索引
+        2. 发现工具时自动注册到 self.tools
+        3. 返回结果供大模型选择
+        
+        优化效果：
+        - 大模型调用 search_memory 后可直接调用发现的工具
+        - 无需再单独处理注册逻辑
+        """
+        logger.info(f"[记忆搜索] 开始搜索, query={query}, search_type={search_type}, top_k={top_k}")
+        
         try:
             results = self._run_async(
                 self.memory_system.search(query, search_type, top_k)
             )
+            
+            logger.info(f"[记忆搜索] 搜索结果: {len(results.get('tools', []))} 个工具, {len(results.get('memories', []))} 条记忆")
+            
+            registered_tools = []
+            for tool_def in results.get("tools", []):
+                func_def = tool_def.get("function", tool_def)
+                tool_name = func_def.get("name", "")
+                if not tool_name:
+                    logger.debug(f"[记忆搜索] 跳过无名称工具")
+                    continue
+                
+                if self._register_skill_tool(tool_name, func_def):
+                    registered_tools.append(tool_name)
+                    logger.info(f"[记忆搜索] ✓ 动态注册技能工具: {tool_name}, 当前工具总数: {len(self.tools)}")
+                elif tool_name in self.tools:
+                    logger.debug(f"[记忆搜索] 工具已存在，跳过注册: {tool_name}")
+                else:
+                    logger.debug(f"[记忆搜索] 跳过非技能工具: {tool_name}")
+            
+            tools_count = len(results.get("tools", []))
+            memories_count = len(results.get("memories", []))
+            
+            message_parts = []
+            if memories_count > 0:
+                message_parts.append(f"{memories_count} 条记忆")
+            if tools_count > 0:
+                message_parts.append(f"{tools_count} 个工具")
+            if registered_tools:
+                message_parts.append(f"已注册 {len(registered_tools)} 个工具供直接调用")
+            
+            message = f"找到 {', '.join(message_parts)}" if message_parts else "未找到相关内容"
+            
+            logger.info(f"[记忆搜索] 完成: {message}")
+            
             return {
                 "status": "success",
-                "message": f"找到 {len(results['memories'])} 条记忆, {len(results['tools'])} 个工具",
+                "message": message,
                 "data": results
             }
         except Exception as e:
@@ -317,8 +398,9 @@ class ToolAdapter:
         执行流程：
         1. 检查是否为子代理工具（以 "agent_" 开头）
         2. 查找工具：从 self.tools 字典中获取工具信息
-        3. 参数校验：使用 JSON Schema 验证参数合法性
-        4. 执行工具：直接调用 tool_info["func"] 函数对象（非反射）
+        3. 【动态注册】工具不存在时，从记忆系统搜索并注册
+        4. 参数校验：使用 JSON Schema 验证参数合法性
+        5. 执行工具：直接调用 tool_info["func"] 函数对象（非反射）
         
         注意：tool_info["func"] 是在 _register_all_tools() 中预先绑定的函数对象
               - file/shell 工具：通过 _get_tool_func() 获取的方法引用
@@ -338,7 +420,16 @@ class ToolAdapter:
             return subagent_tool.call(tool_name, arguments)
         
         if tool_name not in self.tools:
-            return {"status": "error", "message": f"工具不存在: {tool_name}"}
+            logger.info(f"[call_tool] 工具 '{tool_name}' 不在当前工具列表中，当前工具数: {len(self.tools)}")
+            if self._try_register_tool_from_memory(tool_name):
+                logger.info(f"[动态注册] ✓ 工具 '{tool_name}' 已从记忆索引动态注册，当前工具数: {len(self.tools)}")
+            else:
+                available_tools = list(self.tools.keys())[:10]
+                logger.warning(f"[动态注册] ✗ 工具 '{tool_name}' 注册失败，可用工具: {available_tools}...")
+                return {"status": "error", "message": f"工具不存在: {tool_name}"}
+        else:
+            logger.debug(f"[call_tool] 工具 '{tool_name}' 已在工具列表中")
+        
         tool_info = self.tools[tool_name]
         
         try:
@@ -351,6 +442,61 @@ class ToolAdapter:
             return result
         except Exception as e:
             return {"status": "error", "message": f"工具执行失败: {str(e)}"}
+    
+    def _try_register_tool_from_memory(self, tool_name: str) -> bool:
+        """
+        尝试从记忆系统动态注册工具
+        
+        当工具不在 self.tools 中时，从记忆索引搜索并动态注册。
+        主要用于技能工具（skill_xxx）的按需加载。
+        
+        Args:
+            tool_name: 工具名称
+        
+        Returns:
+            bool: 是否成功注册
+        """
+        logger.info(f"[动态注册] 开始尝试注册工具: {tool_name}")
+        
+        if not self.memory_system:
+            logger.warning(f"[动态注册] 记忆系统未启用，无法动态注册")
+            return False
+        
+        if not tool_name.startswith("skill_"):
+            logger.debug(f"[动态注册] 非技能工具，跳过: {tool_name}")
+            return False
+        
+        try:
+            skill_alias = tool_name[6:]
+            logger.info(f"[动态注册] 搜索记忆索引，关键词: {skill_alias}")
+            
+            tools = self._run_async(
+                self.memory_system.search_tools(skill_alias, top_k=1)
+            )
+            
+            if not tools:
+                logger.warning(f"[动态注册] 记忆索引中未找到工具: {tool_name}")
+                return False
+            
+            tool_def = tools[0]
+            func_def = tool_def.get("function", tool_def)
+            found_tool_name = func_def.get("name")
+            
+            logger.info(f"[动态注册] 搜索结果: {found_tool_name}")
+            
+            if found_tool_name != tool_name:
+                logger.warning(f"[动态注册] 搜索结果不匹配: 期望 {tool_name}, 实际 {found_tool_name}")
+                return False
+            
+            if self._register_skill_tool(tool_name, func_def):
+                logger.info(f"[动态注册] ✓ 成功注册技能工具: {tool_name}, 当前工具总数: {len(self.tools)}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"[动态注册] 注册工具失败: {tool_name}, 错误: {e}")
+            return False
     
     def search_tools_from_memory(self, query: str, top_k: int = 5) -> List[Dict]:
         """

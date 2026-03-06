@@ -17,6 +17,7 @@ from .core.conversation import ConversationManager
 from .fileSystem.filesystem import FileSystemTool
 from .provider.llmclient import LLMClient
 from .skill.skill_loader import SkillLoader
+from .memory import MemorySystem
 from .tool.browsertool import BrowserTool
 from .tool.shelltool import ShellTool
 from .tool.tooladapter import ToolAdapter
@@ -312,6 +313,7 @@ class Agent:
         
         self._init_mcp()
         self._init_browser()
+        self._init_memory()
 
     def _init_mcp(self):
         """
@@ -391,31 +393,202 @@ class Agent:
             logger.error(f"{Fore.RED}[Browser] 浏览器工具初始化失败: {e}{Style.RESET_ALL}")
             self.browser_tool = None
 
+    def _init_memory(self):
+        """
+        初始化记忆系统模块
+        
+        功能说明:
+            - 检查是否启用记忆系统功能
+            - 创建 MemorySystem 实例
+            - 将记忆系统工具注册到 ToolAdapter
+            - 处理工具索引并同步到数据库
+            - 从内存中移除已加入记忆索引的工具
+        
+        配置项:
+            - memory.enabled: 是否启用记忆系统
+            - memory.db_path: 向量数据库路径
+            - memory.index_path: 索引文件路径
+        """
+        memory_config = GLOBAL_CONFIG.get("memory", {})
+        enabled = memory_config.get("enabled", False)
+        
+        if not enabled:
+            logger.info(f"{Fore.CYAN}[Memory] 记忆系统已禁用{Style.RESET_ALL}")
+            self.memory_system = None
+            return
+        
+        try:
+            self.memory_system = MemorySystem(memory_config)
+            self.tool_adapter.memory_system = self.memory_system
+            
+            config = self.tool_adapter._load_tools_config()
+            for tool_def in config.get("memory_tools", []):
+                tool_name = tool_def["name"]
+                tool_def["func"] = self.tool_adapter._get_memory_tool_func(tool_name)
+                self.tool_adapter.tools[tool_name] = tool_def
+            
+            logger.info(f"{Fore.CYAN}[Memory] 记忆系统工具注册完成，共 {len(config.get('memory_tools', []))} 个{Style.RESET_ALL}")
+            
+            all_tools = self.tool_adapter.list_tools()
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(self.memory_system.init_async(all_tools))
+                
+                memory_tool_names = set()
+                for tool in result.get("memory_tools", []):
+                    func_def = tool.get("function", tool)
+                    name = func_def.get("name")
+                    if name:
+                        memory_tool_names.add(name)
+                
+                for name in memory_tool_names:
+                    if name in self.tool_adapter.tools:
+                        del self.tool_adapter.tools[name]
+                        logger.debug(f"  - 从内存移除工具（已加入记忆索引）: {name}")
+                
+                if memory_tool_names:
+                    logger.info(f"{Fore.CYAN}[Memory] 已将 {len(memory_tool_names)} 个工具移入记忆索引，当前常驻工具 {len(self.tool_adapter.tools)} 个{Style.RESET_ALL}")
+                    
+                    self._update_injected_skill_list(memory_tool_names)
+                
+                loop.close()
+            except RuntimeError:
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(self._run_memory_init_async, all_tools)
+                    future.result()
+            
+        except ImportError as e:
+            logger.warning(f"{Fore.YELLOW}[Memory] 记忆系统依赖未安装: {e}{Style.RESET_ALL}")
+            self.memory_system = None
+        except Exception as e:
+            logger.error(f"{Fore.RED}[Memory] 记忆系统初始化失败: {e}{Style.RESET_ALL}")
+            self.memory_system = None
+
+    def _run_memory_init_async(self, all_tools):
+        """在独立线程中运行异步初始化"""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self.memory_system.init_async(all_tools))
+        loop.close()
+
+    def _update_injected_skill_list(self, memory_tool_names: set):
+        """
+        更新注入的技能列表，移除已加入记忆索引的技能
+        
+        Args:
+            memory_tool_names: 已加入记忆索引的工具名称集合
+        """
+        try:
+            current_prompt = self.conversation.system_prompt
+            lines_to_remove = []
+            
+            for tool_name in memory_tool_names:
+                if tool_name.startswith("skill_"):
+                    skill_name = tool_name[6:]
+                    lines_to_remove.append(f"- name: {skill_name}")
+            
+            if not lines_to_remove:
+                return
+            
+            lines = current_prompt.split('\n')
+            new_lines = []
+            skip_next = False
+            
+            for i, line in enumerate(lines):
+                if skip_next:
+                    skip_next = False
+                    continue
+                    
+                should_remove = False
+                for remove_prefix in lines_to_remove:
+                    if line.strip().startswith(remove_prefix):
+                        should_remove = True
+                        break
+                
+                if should_remove:
+                    if i + 1 < len(lines) and lines[i + 1].strip().startswith("description:"):
+                        skip_next = True
+                    continue
+                    
+                new_lines.append(line)
+            
+            self.conversation._base_system_prompt = '\n'.join(new_lines)
+            self.conversation.system_prompt = self.conversation._base_system_prompt
+            
+            logger.info(f"{Fore.CYAN}[Memory] 已从 system prompt 移除 {len(lines_to_remove)} 个记忆索引技能{Style.RESET_ALL}")
+            
+        except Exception as e:
+            logger.warning(f"{Fore.YELLOW}[Memory] 更新技能列表失败: {e}{Style.RESET_ALL}")
+
     def reload(self):
         """
         重载所有组件配置。
         
         功能说明:
             - 重载全局配置
+            - 重新加载 Agent 配置（如果使用 agent_config）
             - 重新初始化所有工具（文件、Shell、技能）
             - 重新初始化 MCP 模块
+            - 重新初始化浏览器工具
+            - 重新初始化记忆系统
             - 重载 LLM 客户端配置
             - 热加载系统提示词（从 prompts.md）
         """
         GLOBAL_CONFIG.reload()
+        
+        # 先记录当前模型（防止被 reload_config 覆盖）
+        current_model = self.llm_client.current_model_alias
+        
+        # 重新加载 Agent 配置（如果使用 agent_config）
+        if self.agent_config:
+            from agent.config.agent_config import AgentConfig
+            agents_config = GLOBAL_CONFIG.get("agents", {})
+            agent_config_dict = agents_config.get(self.agent_id, {})
+            if agent_config_dict:
+                new_config = AgentConfig.from_dict(self.agent_id, agent_config_dict)
+                if new_config:
+                    self.agent_config = new_config
+                    # 更新模型配置
+                    if new_config.model:
+                        current_model = new_config.model
+        
+        # 重载 LLM 客户端配置（会检查模型有效性）
+        self.llm_client.reload_config()
+        
+        # 如果需要切换模型， 在 reload_config 之后执行
+        if current_model != self.llm_client.current_model_alias:
+            switch_result = self.llm_client.switch_model(current_model)
+            logger.info(f"{Fore.CYAN}[Reload] 模型已切换: {current_model}{Style.RESET_ALL}")
+        
         self.file_tool = FileSystemTool()
         self.shell_tool = ShellTool()
         self.skill_loader.load_all_skills()
-        self.tool_adapter = ToolAdapter(self.file_tool, self.shell_tool, self.skill_loader)
-        self.llm_client.reload_config()
+        self.tool_adapter = ToolAdapter(
+            self.file_tool, 
+            self.shell_tool, 
+            self.skill_loader,
+            delegation_depth=self.delegation_depth
+        )
         self.conversation.reload_prompt()
         
         skill_patterns = self.agent_config.skills if self.agent_config else None
         skill_list_str = self.skill_loader.get_skill_list_info(skill_patterns)
         self.conversation.inject_skill_list(skill_list_str)
         
+        # 先断开现有 MCP 连接，再重新初始化
+        if self.mcp_manager:
+            try:
+                self.mcp_manager.disconnect_all_sync()
+            except Exception as e:
+                logger.debug(f"[Reload] MCP 断开连接时出错（可忽略）: {e}")
+        
         self._init_mcp()
         self._init_browser()
+        self._init_memory()
         
         logger.info(f"{Fore.GREEN}✅ 所有组件已重载{Style.RESET_ALL}")
 
@@ -656,9 +829,6 @@ class Agent:
             tool_calls=tool_calls_list
         )
         logger.info(f"{Fore.CYAN}已将 assistant 消息添加到对话历史，包含 {len(tool_calls_list)} 个工具调用{Style.RESET_ALL}")
-        # 打印 assistant 消息的 tool_calls 部分，包含工具调用ID、名称和参数
-        print_conversation_history(self.conversation.get_messages(), max_content_length=88888,print_last_only=True)
-
 
         for idx, tool_call in enumerate(message.tool_calls, 1):
             tool_name = tool_call.function.name
@@ -714,6 +884,14 @@ class Agent:
             tool_start_time = time.time()
             
             tool_result = self.tool_adapter.call_tool(tool_name, arguments)
+            
+            # 如果是 search_memory 且返回了记忆，自动注入到 system prompt
+            if tool_name == "search_memory" and tool_result.get("status") == "success":
+                data = tool_result.get("data", {})
+                memories = data.get("memories", [])
+                if memories:
+                    self.conversation.inject_memories(memories)
+                    logger.info(f"{Fore.CYAN}[记忆注入] 已将 {len(memories)} 条记忆注入到 system prompt{Style.RESET_ALL}")
             
             tool_elapsed = time.time() - tool_start_time
             result_status = tool_result.get("status", "unknown")
@@ -875,8 +1053,11 @@ class Agent:
             current_tool_calls += 1
             logger.debug(f"[LLM调用] 第 {current_tool_calls} 轮, 消息数: {len(self.conversation.get_messages())}")
             logger.info(f"[第 {current_tool_calls} 轮] 调用大模型...")
-            # logger.info(f"系统提示词: {self.conversation.system_prompt}")
+            # logger.info(f"[第 {current_tool_calls} 轮] 系统提示词: {self.conversation.system_prompt}")
             # logger.info(f"对话请求内容: {self.conversation.get_messages()}")
+            # for tool in tools:
+            #     logger.debug(f"工具名: {tool}")
+                
             try:
                 response = self.llm_client.chat_completion(
                     messages=self.conversation.get_messages(),

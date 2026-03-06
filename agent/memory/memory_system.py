@@ -709,9 +709,16 @@ class MemorySystem:
         
         memory_tools = []
         keep_tools = []
+        disabled_tools = []
         
         for tool in all_tools:
-            tool_name = tool.get("name")
+            func_def = tool.get("function", tool)
+            tool_name = func_def.get("name")
+            
+            if not tool_name:
+                logger.warning(f"  - 工具缺少名称，跳过: {tool}")
+                continue
+            
             index_entry = index_map.get(tool_name)
             
             if index_entry:
@@ -719,14 +726,22 @@ class MemorySystem:
                 add_to_memory = index_entry.get("add_to_memory", True)
                 
                 if not enabled:
+                    disabled_tools.append(tool_name)
+                    logger.debug(f"  - 工具已禁用: {tool_name}")
                     continue
                 
                 if add_to_memory:
                     memory_tools.append(tool)
+                    logger.debug(f"  - 工具加入记忆索引: {tool_name}")
                 else:
                     keep_tools.append(tool)
+                    logger.debug(f"  - 工具保留常驻: {tool_name}")
             else:
                 keep_tools.append(tool)
+                logger.debug(f"  - 工具未在索引中，保留常驻: {tool_name}")
+        
+        if disabled_tools:
+            logger.info(f"工具分类完成: 禁用={len(disabled_tools)}, 记忆索引={len(memory_tools)}, 常驻={len(keep_tools)}")
         
         return {"memory_tools": memory_tools, "keep_tools": keep_tools}
     
@@ -740,7 +755,7 @@ class MemorySystem:
         Args:
             tools: 需要存入记忆索引的工具列表
         """
-        if not tools or not self.tools_table:
+        if not tools or self.tools_table is None:
             return
         
         try:
@@ -748,27 +763,37 @@ class MemorySystem:
         except Exception:
             pass
         
-        texts = [f"{t['name']}: {t.get('description', '')}" for t in tools]
+        texts = []
+        for t in tools:
+            func_def = t.get("function", t)
+            name = func_def.get("name", "unknown")
+            desc = func_def.get("description", "")
+            texts.append(f"{name}: {desc}")
+        
         embeddings = await self._embed_batch(texts)
         
         entries = []
         for tool, emb in zip(tools, embeddings):
-            tool_id = f"{tool.get('tool_type', 'skill')}:{tool['name']}"
+            func_def = tool.get("function", tool)
+            name = func_def.get("name", "unknown")
+            tool_type = tool.get("tool_type", "skill")
+            tool_id = f"{tool_type}:{name}"
             entries.append({
                 "id": tool_id,
-                "name": tool["name"],
-                "tool_type": tool.get("tool_type", "skill"),
+                "name": name,
+                "tool_type": tool_type,
                 "embedding": emb,
                 "tool_definition": json5.dumps(tool, ensure_ascii=False),
                 "query_count": 0
             })
+            logger.debug(f"  - 初始化工具到记忆索引: {name} (type={tool_type})")
         
         self.tools_table.add(entries)
         logger.info(f"记忆索引同步完成，共 {len(entries)} 个工具")
     
     async def init_async(self, all_tools: List[Dict]) -> Dict[str, Any]:
         """
-        异步初始化（不阻塞启动）
+        异步初始化（阻塞等待同步完成）
         
         Args:
             all_tools: 系统加载的所有工具列表
@@ -778,7 +803,7 @@ class MemorySystem:
         """
         result = self.process_tools(all_tools)
         
-        asyncio.create_task(self.sync_memory_tools(result["memory_tools"]))
+        await self.sync_memory_tools(result["memory_tools"])
         
         logger.info(f"异步初始化完成，keep_tools={len(result['keep_tools'])}, memory_tools={len(result['memory_tools'])}")
         return result
@@ -989,10 +1014,11 @@ class MemorySystem:
         if search_type in ["all", "tool"] and self.tools_table is not None:
             try:
                 rows = self.tools_table.search(query_embedding).limit(top_k).to_list()
-                results["tools"] = [
-                    {"name": r["name"], "description": r.get("tool_definition", ""), "type": r.get("tool_type", "skill")}
-                    for r in rows
-                ]
+                results["tools"] = []
+                for r in rows:
+                    tool_def = json5.loads(r.get("tool_definition", "{}"))
+                    results["tools"].append(tool_def)
+                    self._increment_query_count(r["name"])
             except Exception:
                 pass
         

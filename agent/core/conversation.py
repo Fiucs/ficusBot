@@ -92,6 +92,7 @@ class ConversationManager:
         self._base_system_prompt: str = ""
         self.system_prompt: str = ""
         self._injected_skills: Set[str] = set()
+        self._injected_memories: List[Dict[str, Any]] = []
         
         self._enable_persistence = enable_persistence and GLOBAL_CONFIG.get("session.enable_persistence", True)
         self._storage: Optional['SessionStorage'] = None
@@ -262,7 +263,13 @@ class ConversationManager:
             tool_calls: 工具调用列表（可选）
         """
         with self._lock:
-            message = {"role": role, "content": content}
+            # 过滤空的 assistant 消息（无内容且无工具调用）
+            if role == "assistant":
+                if (not content or content.strip() == "") and not tool_calls:
+                    logger.debug(f"[add_message] 跳过空的 assistant 消息")
+                    return
+            
+            message = {"role": role, "content": content or ""}
             if tool_calls:
                 message["tool_calls"] = tool_calls
             self.history.append(message)
@@ -399,6 +406,124 @@ class ConversationManager:
             if skill_name:
                 return skill_name in self._injected_skills
             return len(self._injected_skills) > 0
+
+    def inject_memories(self, memories: List[Dict[str, Any]]) -> bool:
+        """
+        注入记忆内容到 system prompt（线程安全）。
+        
+        将 search_memory 查询到的记忆注入到 {INJECTED_MEMORY_LIST} 占位符处。
+        类似技能注入机制，记忆内容会动态显示在 system prompt 中。
+        
+        Args:
+            memories: 记忆列表，每条记忆包含 content, memory_type, created_at 等字段
+        
+        Returns:
+            bool: 注入是否成功
+        """
+        if not memories:
+            return True
+        
+        with self._lock:
+            try:
+                # 合并新记忆到已注入的记忆列表（去重）
+                existing_ids = {m.get("id") for m in self._injected_memories if m.get("id")}
+                for memory in memories:
+                    memory_id = memory.get("id")
+                    if memory_id and memory_id not in existing_ids:
+                        self._injected_memories.append(memory)
+                    elif not memory_id:
+                        # 无 ID 的记忆直接添加
+                        self._injected_memories.append(memory)
+                
+                # 格式化记忆内容
+                memory_content = self._format_memories(self._injected_memories)
+                
+                # 替换占位符
+                placeholder = "{INJECTED_MEMORY_LIST}"
+                if placeholder in self.system_prompt:
+                    self.system_prompt = self.system_prompt.replace(placeholder, memory_content)
+                else:
+                    # 如果占位符不存在，尝试在 <memory> 区域内添加
+                    memory_section_start = self.system_prompt.find("<memory>")
+                    if memory_section_start != -1:
+                        insert_pos = self.system_prompt.find("\n", memory_section_start) + 1
+                        self.system_prompt = (
+                            self.system_prompt[:insert_pos] + 
+                            "\n" + memory_content + "\n" + 
+                            self.system_prompt[insert_pos:]
+                        )
+                    else:
+                        logger.warning(f"{Fore.YELLOW}未找到记忆注入标记{Style.RESET_ALL}")
+                        return False
+                
+                logger.info(f"{Fore.CYAN}记忆已注入: {len(memories)} 条新记忆, 当前共 {len(self._injected_memories)} 条{Style.RESET_ALL}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"{Fore.RED}记忆注入失败: {str(e)}{Style.RESET_ALL}")
+                return False
+    
+    def _format_memories(self, memories: List[Dict[str, Any]]) -> str:
+        """
+        格式化记忆列表为可读文本。
+        
+        Args:
+            memories: 记忆列表
+        
+        Returns:
+            str: 格式化后的记忆文本
+        """
+        if not memories:
+            return "_暂无已保存的记忆_"
+        
+        lines = []
+        for i, memory in enumerate(memories, 1):
+            content = memory.get("content", "")
+            memory_type = memory.get("memory_type", "unknown")
+            created_at = memory.get("created_at", "")
+            
+            # 类型映射
+            type_labels = {
+                "preference": "偏好",
+                "fact": "事实",
+                "task": "任务",
+                "note": "笔记",
+                "unknown": "其他"
+            }
+            type_label = type_labels.get(memory_type, memory_type)
+            
+            # 格式化单条记忆
+            line = f"{i}. [{type_label}] {content}"
+            if created_at:
+                line += f" ({created_at})"
+            lines.append(line)
+        
+        return "\n".join(lines)
+    
+    def clear_injected_memories(self) -> bool:
+        """
+        清理所有注入的记忆（线程安全）。
+        
+        Returns:
+            bool: 清理是否成功
+        """
+        with self._lock:
+            try:
+                self._injected_memories.clear()
+                # 恢复占位符
+                placeholder = "{INJECTED_MEMORY_LIST}"
+                if placeholder not in self.system_prompt:
+                    # 尝试移除已注入的记忆内容
+                    memory_section_start = self.system_prompt.find("<memory>")
+                    if memory_section_start != -1:
+                        # 简单处理：重新初始化 system prompt
+                        self._init_system_prompt()
+                
+                logger.info(f"{Fore.CYAN}已清理所有注入的记忆{Style.RESET_ALL}")
+                return True
+            except Exception as e:
+                logger.error(f"{Fore.RED}清理记忆失败: {str(e)}{Style.RESET_ALL}")
+                return False
 
     def get_injected_skills(self) -> Set[str]:
         """

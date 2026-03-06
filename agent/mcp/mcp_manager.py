@@ -61,11 +61,9 @@ class MCPManager:
     def _get_event_loop(self) -> asyncio.AbstractEventLoop:
         """获取或创建事件循环"""
         if self._event_loop is None or self._event_loop.is_closed():
-            try:
-                self._event_loop = asyncio.get_event_loop()
-            except RuntimeError:
-                self._event_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._event_loop)
+            # 总是创建新的事件循环，避免使用已关闭的循环
+            self._event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._event_loop)
         return self._event_loop
     
     def _run_async(self, coro):
@@ -78,14 +76,19 @@ class MCPManager:
         返回:
             协程执行结果
         """
-        loop = self._get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        else:
-            return loop.run_until_complete(coro)
+        try:
+            loop = self._get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, coro)
+                    return future.result()
+            else:
+                return loop.run_until_complete(coro)
+        except RuntimeError as e:
+            # 事件循环问题，使用 asyncio.run 创建新循环
+            logger.debug(f"[MCP] 事件循环问题，使用新循环: {e}")
+            return asyncio.run(coro)
     
     def load_servers(self) -> int:
         """

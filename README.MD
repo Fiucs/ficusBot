@@ -1003,6 +1003,31 @@ ficusbot/
 
 ## 最近更新
 
+### 2026-03-06
+
+- **工具动态注册机制优化**：
+  - 修复 `search_memory` 工具名获取问题（正确解析 OpenAI Function Calling 格式）
+  - 新增 `_register_skill_tool` 公共方法，统一技能工具注册逻辑
+  - `search_memory` 发现工具后自动注册，大模型可直接调用
+  - 增强日志输出，便于调试动态注册流程
+- **记忆注入机制**：
+  - 新增 `{INJECTED_MEMORY_LIST}` 占位符，仿照技能注入机制
+  - `search_memory` 查询到的记忆自动注入到 system prompt
+  - 大模型可直接看到已保存的记忆，无需重复查询
+- **提示词优化**：
+  - 将 agents.md 中所有"回答"改为"输出"，避免大模型误将"回答"当作工具调用
+  - 优化工具选择决策规则，明确"优先调用 search_memory"
+- **会话管理修复**：
+  - `add_message` 方法过滤空的 assistant 消息，防止历史记录污染
+  - 修复会话加载时第一条消息不是 user 消息的问题
+- **reload 命令修复**：
+  - 修复 `AgentConfigLoader` 不存在的问题，改用 `AgentConfig.from_dict`
+  - 修复 `ToolAdapter` 重新创建时 `delegation_depth` 丢失问题
+  - 修复模型切换被 `reload_config` 覆盖的问题
+- **MCP 事件循环修复**：
+  - 修复 Windows 上 "Event loop is closed" 错误
+  - 优化 `_run_async` 方法，添加异常处理和自动恢复机制
+
 ### 2026-03-05
 
 - **记忆系统上线**：新增 `agent/memory/` 模块，提供长记忆存储和语义搜索能力

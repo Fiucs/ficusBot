@@ -141,7 +141,7 @@
   "memory_tools": [
     {
       "name": "save_memory",
-      "description": "Save important info to long-term memory. Store user preferences, facts, task results. Params: content(required), memory_type(optional: conversation/fact/preference/task/insight/document), importance(optional: 1-10), tags(optional). Ex: save_memory({content:'User prefers Chinese', memory_type:'preference', importance:8})",
+      "description": "保存信息到长期记忆。存储用户偏好、事实、任务结果等。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -170,7 +170,7 @@
     },
     {
       "name": "search_memory",
-      "description": "Search long-term memory for related info. Find user preferences, facts, tools. Params: query(required), search_type(optional: all/memory/tool), top_k(optional). Ex: search_memory({query:'user language preference', search_type:'memory'})",
+      "description": "搜索长期记忆或工具。使用场景：(1)查询用户偏好、历史决策、先前工作时，search_type='memory'；(2)常驻工具和技能列表都无法满足需求，需要发现新工具时，search_type='tool'；(3)不确定时用 search_type='all'。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -178,7 +178,7 @@
           "search_type": {
             "type": "string",
             "enum": ["all", "memory", "tool"],
-            "description": "搜索范围：all(全部), memory(仅记忆), tool(仅工具)",
+            "description": "搜索范围：memory(用户记忆/偏好/事实), tool(搜索可用工具/技能), all(全部)",
             "default": "all"
           },
           "top_k": {
@@ -192,7 +192,7 @@
     },
     {
       "name": "delete_memory",
-      "description": "Delete a specific memory by ID. Params: memory_id(required). Ex: delete_memory({memory_id:'abc123'})",
+      "description": "删除指定ID的记忆。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -203,7 +203,7 @@
     },
     {
       "name": "register_tool",
-      "description": "Register new tool to tool index. Use when creating new skills or discovering tools to index. Params: name(required), description(required), tool_type(required: skill/mcp_server/builtin), source(optional), enabled(optional), add_to_memory(optional). Ex: register_tool({name:'web-search', description:'Search web', tool_type:'skill'})",
+      "description": "注册新工具到索引。用于创建技能或发现新工具时注册。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -221,30 +221,30 @@
         "required": ["name", "description", "tool_type"]
       }
     },
-    {
-      "name": "unregister_tool",
-      "description": "Remove tool from tool index. Params: name(required). Ex: unregister_tool({name:'deprecated-skill'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "name": {"type": "string", "description": "要移除的工具名称"}
-        },
-        "required": ["name"]
-      }
-    },
-    {
-      "name": "update_tool_config",
-      "description": "Update tool configuration like enabled status or memory index settings. Params: name(required), enabled(optional), add_to_memory(optional). Ex: update_tool_config({name:'web-search', add_to_memory:false})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "name": {"type": "string", "description": "工具名称"},
-          "enabled": {"type": "boolean", "description": "是否启用"},
-          "add_to_memory": {"type": "boolean", "description": "是否加入记忆索引"}
-        },
-        "required": ["name"]
-      }
-    }
+    // {
+    //   "name": "unregister_tool",
+    //   "description": "Remove tool from tool index. Params: name(required). Ex: unregister_tool({name:'deprecated-skill'})",
+    //   "parameters": {
+    //     "type": "object",
+    //     "properties": {
+    //       "name": {"type": "string", "description": "要移除的工具名称"}
+    //     },
+    //     "required": ["name"]
+    //   }
+    // },
+    // {
+    //   "name": "update_tool_config",
+    //   "description": "Update tool configuration like enabled status or memory index settings. Params: name(required), enabled(optional), add_to_memory(optional). Ex: update_tool_config({name:'web-search', add_to_memory:false})",
+    //   "parameters": {
+    //     "type": "object",
+    //     "properties": {
+    //       "name": {"type": "string", "description": "工具名称"},
+    //       "enabled": {"type": "boolean", "description": "是否启用"},
+    //       "add_to_memory": {"type": "boolean", "description": "是否加入记忆索引"}
+    //     },
+    //     "required": ["name"]
+    //   }
+    // }
   ],
 
   // ==========================================

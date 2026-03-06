@@ -1,63 +1,14 @@
 {
-    // ==========================================
-    // 工具索引文件 - 管理所有工具的注册和配置
-    // 不写默认开启工具但是不加入记忆索引
-    // ==========================================
-    // 
-    // 字段说明：
-    //   name: 工具名称（唯一标识，必须与系统工具名完全一致）
-    //         - skill 类型：使用完整名（如 "skill_exa-web-search-free"）
-    //         - builtin 类型：使用原始名称（如 "file_read", "browser_navigate", "save_memory"）
-    //         - mcp_server 类型：使用原始名称
-    //   tool_type: 工具类型 - builtin(内置) / mcp_server(MCP服务) / skill(技能)
-    //   source: 工具来源路径（仅skill类型，目录名，自动查找SKILL.md）
-    //   mcp_server: MCP服务名称（仅mcp_server类型）
-    //   enabled: 是否启用（false则从工具列表移除）
-    //   add_to_memory: 是否加入记忆索引（true则按需加载，减少token消耗）
-    //   query_count: 查询次数（达到hot_threshold自动转为始终加载）
-    //
-    // ==========================================
-    
-    "version": "1.0",
-    "updated_at": "2026-03-05 15:30:00",
-    "tools": [
-        // 示例：技能工具
-        {
-            "name": "skill_exa-web-search-free",
-            "tool_type": "skill",
-            "source": "skills/exa-web-search-free",
-            "enabled": true,
-            "add_to_memory": true,
-            "query_count": 0
-        },
-        // 
-        // 示例：MCP服务工具
-        // {
-        //     "name": "filesystem",
-        //     "tool_type": "mcp_server",
-        //     "mcp_server": "filesystem-server",
-        //     "enabled": true,
-        //     "add_to_memory": false,
-        //     "query_count": 5
-        // },
-        // 
-        // 示例：内置工具
-        // {
-        //     "name": "file_read",
-        //     "tool_type": "builtin",
-        //     "enabled": true,
-        //     "add_to_memory": false,
-        //     "query_count": 15
-        // },
-        // 
-        // 示例：禁用的工具
-        // {
-        //     "name": "deprecated-tool",
-        //     "tool_type": "skill",
-        //     "source": "skills/deprecated-tool",
-        //     "enabled": false,
-        //     "add_to_memory": true,
-        //     "query_count": 0
-        // }
-    ]
+  "version": "1.0",
+  "updated_at": "2026-03-06 18:35:33",
+  "tools": [
+    {
+      "name": "skill_weather",
+      "tool_type": "skill",
+      "source": "skills/weather",
+      "enabled": true,
+      "add_to_memory": true,
+      "query_count": 29
+    }
+  ]
 }

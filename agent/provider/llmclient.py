@@ -458,7 +458,7 @@ class LLMClient:
             kwargs = self._build_thinking_params(config, kwargs)
 
             import json
-            logger.debug(f"[LLMClient] 完整请求参数:\n{json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)}")
+            # logger.debug(f"[LLMClient] 完整请求参数:\n{json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)}")
 
             return completion(**kwargs)
 
