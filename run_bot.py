@@ -132,36 +132,39 @@ async def run_bot(
         agents: 指定启动的 Agent ID 列表
     """
     from agent.server import Gateway
-    from agent.main import get_agent, start_agents, run_cli
+    from agent.main import get_agent, start_agents, run_cli, _init_messaging
     from agent.registry import AGENT_REGISTRY
     
     print_banner()
     print_config_info()
     
-    # 启动指定的 Agent（多 Agent 模式）
+    agent_ids_to_start = None
+    
     if all_agents:
         print(f"{Fore.CYAN}🚀 启动所有配置的 Agent...{Style.RESET_ALL}")
-        agents_dict = start_agents()
+        agent_ids_to_start = AGENT_REGISTRY.list_agents()
+        agents_dict = start_agents(agent_ids_to_start)
         print(f"{Fore.GREEN}✅ 已启动 Agent: {list(agents_dict.keys())}{Style.RESET_ALL}")
     elif agents:
         print(f"{Fore.CYAN}🚀 启动指定 Agent: {agents}{Style.RESET_ALL}")
+        agent_ids_to_start = agents
         agents_dict = start_agents(agents)
         print(f"{Fore.GREEN}✅ 已启动 Agent: {list(agents_dict.keys())}{Style.RESET_ALL}")
     
-    # 初始化 Agent（非回声模式时）
     agent = None
     if not use_echo:
         try:
             agent = get_agent()
+            if agent_ids_to_start is None:
+                agent_ids_to_start = ["default"]
+            _init_messaging(agent_ids_to_start)
             logger.info("[Bot] Agent 已初始化")
         except Exception as e:
             logger.error(f"[Bot] Agent 初始化失败: {e}, 将使用回声模式")
             use_echo = True
     
-    # 创建 Bot 网关（传入 agent_registry 支持命令处理）
     gateway = Gateway(agent=agent, use_echo_processor=use_echo, agent_registry=AGENT_REGISTRY)
     
-    # 从配置文件加载平台监听器
     loaded = gateway.load_from_config()
     
     if loaded == 0:
@@ -169,7 +172,6 @@ async def run_bot(
         print(f"{Fore.YELLOW}提示: 在 config.json 的 bot.channels 中启用平台{Style.RESET_ALL}")
         return
     
-    # 启动 API 服务（后台线程）
     if with_api:
         from agent.utils.network import get_local_ip
         
@@ -191,7 +193,6 @@ async def run_bot(
             print(f"   • 局域网访问: http://{local_ip}:{port}")
             print(f"   • 局域网文档: http://{local_ip}:{port}/docs")
     
-    # 启动 CLI（后台线程）
     if with_cli and agent:
         def run_cli_thread():
             run_cli(agent)
@@ -202,7 +203,6 @@ async def run_bot(
     
     print(f"{Fore.GREEN}🚀 Bot 网关启动中...{Style.RESET_ALL}")
     
-    # 运行 Bot 网关主循环
     try:
         await gateway.run_forever()
     except KeyboardInterrupt:

@@ -1,10 +1,13 @@
 import os
 import sys
 import subprocess
-from typing import Any, Dict
+from typing import Any, Dict, Optional, TYPE_CHECKING
 from loguru import logger
 from agent.config.configloader import GLOBAL_CONFIG
 from agent.utils.command_utils import CommandQuoteHelper
+
+if TYPE_CHECKING:
+    from agent.config.agent_config import AgentConfig
 
 
 class ShellTool:
@@ -27,14 +30,28 @@ class ShellTool:
     - workspace_root: 工作区根目录
     """
     
-    def __init__(self):
-        """初始化ShellTool，加载配置项"""
-        self.cmd_whitelist = GLOBAL_CONFIG.get("shell_cmd_whitelist", [])
-        self.cmd_deny_list = GLOBAL_CONFIG.get("shell_cmd_deny_list", [])
-        self.path_whitelist = GLOBAL_CONFIG.get("shell_path_whitelist", [])
-        self.path_deny_list = GLOBAL_CONFIG.get("shell_path_deny_list", [])
-        self.timeout = GLOBAL_CONFIG.get("exec_timeout", 10)
-        self.workspace_root = os.path.abspath(GLOBAL_CONFIG.get("workspace_root", "."))
+    def __init__(self, agent_config: Optional["AgentConfig"] = None):
+        """
+        初始化ShellTool，加载配置项
+        
+        Args:
+            agent_config: Agent 配置对象，支持 Agent 级别配置覆盖全局配置
+        """
+        self.agent_config = agent_config
+        if agent_config:
+            self.cmd_whitelist = agent_config.get_shell_cmd_whitelist()
+            self.cmd_deny_list = agent_config.get_shell_cmd_deny_list()
+            self.path_whitelist = agent_config.get_shell_path_whitelist()
+            self.path_deny_list = agent_config.get_shell_path_deny_list()
+            self.timeout = agent_config.get_exec_timeout()
+            self.workspace_root = os.path.abspath(agent_config.get_workspace_root())
+        else:
+            self.cmd_whitelist = GLOBAL_CONFIG.get("shell_cmd_whitelist", [])
+            self.cmd_deny_list = GLOBAL_CONFIG.get("shell_cmd_deny_list", [])
+            self.path_whitelist = GLOBAL_CONFIG.get("shell_path_whitelist", [])
+            self.path_deny_list = GLOBAL_CONFIG.get("shell_path_deny_list", [])
+            self.timeout = GLOBAL_CONFIG.get("exec_timeout", 10)
+            self.workspace_root = os.path.abspath(GLOBAL_CONFIG.get("workspace_root", "."))
         self.is_windows = sys.platform.startswith("win")
 
     def _wrap_windows_cmd(self, cmd: str) -> str:

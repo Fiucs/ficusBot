@@ -210,3 +210,109 @@ class MessageBus:
     def queue_size(self) -> int:
         """获取队列大小"""
         return self._queue.qsize()
+
+
+class MessageBusAdapter:
+    """
+    MessageBus 到 MessageChannel 的适配器
+    
+    功能说明:
+        - 将现有 MessageBus 的消息转发到新的 MessageChannel
+        - 保持向后兼容性
+        - 支持统一消息格式转换
+    
+    使用示例:
+        adapter = MessageBusAdapter(channel)
+        message_bus.subscribe("incoming_message", adapter.on_incoming_message)
+    """
+    
+    def __init__(self, channel: Optional["MessageChannel"] = None):
+        """
+        初始化适配器
+        
+        Args:
+            channel: MessageChannel 实例，为 None 时自动获取全局通道
+        """
+        if channel is None:
+            from agent.core.messaging import get_channel
+            self._channel = get_channel()
+        else:
+            self._channel = channel
+    
+    async def on_incoming_message(self, data: Dict[str, Any]) -> Optional["MessageResponse"]:
+        """
+        处理来自 MessageBus 的入站消息
+        
+        Args:
+            data: 消息数据，包含 UnifiedMessage 格式
+            
+        Returns:
+            MessageResponse 响应对象
+        """
+        from agent.core.messaging import (
+            Message, MessageSource, MessageType, MessageResponse
+        )
+        
+        try:
+            source_map = {
+                "telegram": MessageSource.BOT,
+                "discord": MessageSource.BOT,
+                "slack": MessageSource.BOT,
+                "dingtalk": MessageSource.BOT,
+                "wecom": MessageSource.BOT,
+                "lark": MessageSource.BOT,
+                "qq": MessageSource.BOT,
+            }
+            
+            platform = data.get("platform", "bot")
+            source = source_map.get(platform, MessageSource.BOT)
+            
+            message = Message.create(
+                source=source,
+                type=MessageType.CHAT,
+                content=data.get("content", ""),
+                user_id=data.get("user_id", ""),
+                session_id=data.get("chat_id"),
+                metadata={
+                    "platform": platform,
+                    "listener": data.get("listener", ""),
+                    "chat_id": data.get("chat_id"),
+                    "thread_id": data.get("thread_id"),
+                    "raw": data.get("raw")
+                }
+            )
+            
+            response = await self._channel.publish(
+                message, 
+                wait_for_response=True,
+                timeout=120.0
+            )
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"[MessageBusAdapter] 处理消息异常: {e}")
+            return MessageResponse(
+                message_id="",
+                success=False,
+                error=str(e)
+            )
+    
+    async def on_outgoing_message(self, response: "MessageResponse", original_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        将 MessageChannel 响应转换为 OutgoingMessage 格式
+        
+        Args:
+            response: MessageChannel 响应
+            original_data: 原始消息数据
+            
+        Returns:
+            OutgoingMessage 格式的字典
+        """
+        return {
+            "listener": original_data.get("listener", ""),
+            "chat_id": original_data.get("chat_id", ""),
+            "content": response.content if response else "",
+            "thread_id": original_data.get("thread_id"),
+            "reply_to": original_data.get("id")
+        }

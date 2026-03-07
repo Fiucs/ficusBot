@@ -685,13 +685,6 @@ class ConversationManager:
                             
                         self.history.append(msg)
                     
-                    # 确保第一条非 system 消息是 user（某些模型模板要求）
-                    if self.history and self.history[0].get("role") != "user":
-                        # 移除开头的非 user 消息
-                        while self.history and self.history[0].get("role") not in ["user", "system"]:
-                            removed = self.history.pop(0)
-                            logger.debug(f"[会话加载] 移除开头的非 user 消息: {removed.get('role')}")
-                    
                     self._injected_skills = set(data.get("injected_skills", []))
                     
                     # _base_system_prompt 始终使用最新代码生成的，不从存储加载
@@ -931,19 +924,6 @@ class ConversationManager:
             # 处理最后可能暂存的 assistant
             if pending_assistant is not None:
                 new_history.append(pending_assistant)
-
-            # 确保历史记录以 user 消息开头（某些模型模板要求）
-            if new_history and new_history[0].get("role") != "user":
-                # 尝试从原始历史中找到第一条 user 消息
-                first_user_msg = None
-                for msg in self.history:
-                    if msg.get("role") == "user":
-                        first_user_msg = msg
-                        break
-                
-                if first_user_msg:
-                    new_history.insert(0, first_user_msg)
-                    logger.info(f"{Fore.CYAN}  恢复首条 user 消息以满足模型模板要求{Style.RESET_ALL}")
 
             self.history = new_history
             final_count = len(self.history)

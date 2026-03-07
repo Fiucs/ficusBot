@@ -190,17 +190,17 @@
         "required": ["query"]
       }
     },
-    {
-      "name": "delete_memory",
-      "description": "删除指定ID的记忆。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "memory_id": {"type": "string", "description": "要删除的记忆ID"}
-        },
-        "required": ["memory_id"]
-      }
-    },
+    // {
+    //   "name": "delete_memory",
+    //   "description": "删除指定ID的记忆。",
+    //   "parameters": {
+    //     "type": "object",
+    //     "properties": {
+    //       "memory_id": {"type": "string", "description": "要删除的记忆ID"}
+    //     },
+    //     "required": ["memory_id"]
+    //   }
+    // },
     {
       "name": "register_tool",
       "description": "注册新工具到索引。用于创建技能或发现新工具时注册。",
@@ -403,4 +403,7 @@
       }
     }
   ]
+
+
+  
 }

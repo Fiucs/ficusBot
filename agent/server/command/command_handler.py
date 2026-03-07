@@ -33,7 +33,7 @@ from .command_result import CommandResult
 
 if TYPE_CHECKING:
     from agent.registry import AgentRegistry
-    from agent.main import Agent
+    from agent.core.agent import Agent
 
 
 @dataclass
@@ -372,17 +372,18 @@ class CommandHandler:
         try:
             GLOBAL_CONFIG.reload()
             
-            agent = self._get_agent(context)
-            if agent:
-                agent.conversation.reload_prompt()
-            
             if self._registry:
                 self._registry.reload()
+            
+            agent = self._get_agent(context)
+            if agent:
+                agent.reload()
             
             return CommandResult.success_result(
                 "✅ 配置已重载\n"
                 "📌 系统提示词已更新\n"
-                "📌 Agent 配置已更新"
+                "📌 Agent 配置已更新\n"
+                "📌 工具配置已更新"
             )
         except Exception as e:
             return CommandResult.error_result(f"重载配置失败: {e}")

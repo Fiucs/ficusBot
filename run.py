@@ -21,7 +21,7 @@ import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agent.main import get_agent, start_agents, run_cli
+from agent.main import get_agent, start_agents, run_cli, _init_messaging
 
 
 def parse_args():
@@ -70,27 +70,33 @@ def main():
     from agent.config.configloader import GLOBAL_CONFIG
     from agent.main import get_app
     import uvicorn
-    # 在最开始设置 CLAWHUB_WORKDIR
-    from agent.config.configloader import GLOBAL_CONFIG
+    
     workspace_root = GLOBAL_CONFIG.get("workspace_root", "./workspace")
     os.environ["CLAWHUB_WORKDIR"] = os.path.abspath(workspace_root)
     
-    # 启动指定的 Agent
+    agent = None
+    agent_ids_to_start = None
+    
     if args.all_agents:
         print("🚀 启动所有配置的 Agent...")
-        agents = start_agents()
+        from agent.registry import AGENT_REGISTRY
+        agent_ids_to_start = AGENT_REGISTRY.list_agents()
+        agents = start_agents(agent_ids_to_start)
         print(f"✅ 已启动 Agent: {list(agents.keys())}")
+        agent = agents.get("default")
     elif args.agents:
         print(f"🚀 启动指定 Agent: {args.agents}")
+        agent_ids_to_start = args.agents
         agents = start_agents(args.agents)
         print(f"✅ 已启动 Agent: {list(agents.keys())}")
+        agent = agents.get(args.agents[0])
     else:
         agent = get_agent()
+        agent_ids_to_start = ["default"]
     
     host = args.host or GLOBAL_CONFIG.get("api.host", "0.0.0.0")
     port = args.port or GLOBAL_CONFIG.get("api.port", 18080)
     
-    # API 服务模式
     if args.api:
         from agent.utils.network import get_local_ip
         
@@ -106,8 +112,7 @@ def main():
         app = get_app()
         uvicorn.run(app, host=host, port=port)
     else:
-        # CLI 模式
-        agent = get_agent()
+        _init_messaging(agent_ids_to_start)
         run_cli(agent)
 
 

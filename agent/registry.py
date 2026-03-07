@@ -17,7 +17,7 @@ from loguru import logger
 from colorama import Fore, Style
 
 if TYPE_CHECKING:
-    from agent.main import Agent
+    from agent.core.agent import Agent
 
 
 class AgentRegistry:
@@ -120,7 +120,7 @@ class AgentRegistry:
         Returns:
             新创建的 Agent 实例
         """
-        from agent.main import Agent
+        from agent.core.agent import Agent
         config = self._configs[agent_id]
         logger.info(f"{Fore.GREEN}[AgentRegistry] 创建 Agent 实例: {agent_id}{Style.RESET_ALL}")
         return Agent(agent_config=config)

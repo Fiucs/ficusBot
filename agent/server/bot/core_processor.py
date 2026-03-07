@@ -20,7 +20,7 @@ from .chat_session_map import ChatSessionMap, ChatSessionInfo
 
 if TYPE_CHECKING:
     from agent.registry import AgentRegistry
-    from agent.main import Agent
+    from agent.core.agent import Agent
 
 
 class CoreProcessor:

@@ -3,7 +3,7 @@
 # ======================================
 import os
 import shutil
-from typing import Dict, Any, List, Optional, AsyncGenerator
+from typing import Dict, Any, List, Optional, AsyncGenerator, TYPE_CHECKING
 
 from loguru import logger
 from agent.config.configloader import GLOBAL_CONFIG 
@@ -11,6 +11,9 @@ from agent.fileSystem.path_resolver import PathResolver
 from agent.tool.shelltool import ShellTool
 from datetime import datetime
 import glob
+
+if TYPE_CHECKING:
+    from agent.config.agent_config import AgentConfig
 
 
 class FileSystemTool:
@@ -32,11 +35,22 @@ class FileSystemTool:
     - delete: 删除文件或目录
     """
     
-    def __init__(self):
-        self.allow_list = [os.path.abspath(p) for p in GLOBAL_CONFIG.get("file_allow_list", [])]
-        self.workspace_root = os.path.abspath(GLOBAL_CONFIG.get("workspace_root", "."))
+    def __init__(self, agent_config: Optional["AgentConfig"] = None):
+        """
+        初始化 FileSystemTool
+        
+        Args:
+            agent_config: Agent 配置对象，支持 Agent 级别配置覆盖全局配置
+        """
+        self.agent_config = agent_config
+        if agent_config:
+            self.allow_list = [os.path.abspath(p) for p in agent_config.get_file_allow_list()]
+            self.workspace_root = os.path.abspath(agent_config.get_workspace_root())
+        else:
+            self.allow_list = [os.path.abspath(p) for p in GLOBAL_CONFIG.get("file_allow_list", [])]
+            self.workspace_root = os.path.abspath(GLOBAL_CONFIG.get("workspace_root", "."))
         self.path_resolver = PathResolver(self.allow_list)
-        self.shell_tool = ShellTool()
+        self.shell_tool = ShellTool(agent_config)
 
     def _safe_path(self, input_path: str) -> str:
         """
