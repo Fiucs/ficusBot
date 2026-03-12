@@ -170,11 +170,11 @@
     },
     {
       "name": "discover",
-      "description": "发现可用资源：工具、技能、记忆。当常驻工具无法满足需求时调用。参数: query(可选,搜索关键词,为空时返回所有), resource_type(可选,tool/memory/all,默认all), top_k(可选,返回数量,默认10), distance_threshold(可选,距离阈值,默认1.0,越小越精确)。",
+      "description": "发现可用资源：工具、技能、记忆。当常驻工具无法满足需求时调用。参数: query(可选,搜索关键词,为空时返回所有), resource_type(可选,tool/memory/all,默认all), top_k(可选,返回数量,默认10), distance_threshold(可选,距离阈值,默认1.0,越小越精确), date_range(可选,日期范围,格式:[start_date,end_date],如:['2026-03-01','2026-03-06'])。",
       "parameters": {
         "type": "object",
         "properties": {
-          "query": {"type": "string", "description": "搜索关键词，描述需要的工具功能或记忆内容。为空时返回所有资源", "default": ""},
+          "query": {"type": "string", "description": "搜索关键词，用于语义匹配。重要：只放内容关键词，不要放时间描述！时间用date_range参数。示例：用户问'3月9号之前的记忆'，query填''或'记忆'，date_range填['2026-01-01','2026-03-09']。用户问'上周讨论的API设计'，query填'API设计'，去掉'上周'。为空时返回所有资源", "default": ""},
           "resource_type": {
             "type": "string",
             "enum": ["all", "memory", "tool"],
@@ -190,6 +190,13 @@
             "type": "number",
             "description": "L2距离阈值，距离越小越相似。默认1.0，越小结果越精确但可能漏掉相关内容，越大结果越多但可能包含不相关内容。建议范围0.5-1.5",
             "default": 1.0
+          },
+          "date_range": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "日期范围过滤，格式：[start_date, end_date]，如：['2026-03-01', '2026-03-06']"
           }
         },
         "required": []

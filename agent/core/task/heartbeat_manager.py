@@ -98,7 +98,7 @@ class HeartbeatManager:
             with open(self.heartbeat_file, "w", encoding="utf-8") as f:
                 json.dump(heartbeat, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"{Fore.GREEN}[心跳状态] 心跳已初始化: {task_id}{Style.RESET_ALL}")
+            logger.debug(f"{Fore.GREEN}[心跳状态] 心跳已初始化: {task_id}{Style.RESET_ALL}")
             return True
             
         except Exception as e:

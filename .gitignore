@@ -1,5 +1,5 @@
 # FicusBot 运行时数据目录
-.ficsbot/
+
 
 # Python
 __pycache__/
@@ -60,3 +60,17 @@ plan.MD
 prompt.txt
 .trae/
 docs/
+.gitignore
+.ficsbot/workspace/memory/
+.ficsbot/workspace/models/huggingface/
+.ficsbot/workspace/tasks/
+.ficsbot/workspace/memory/
+.ficsbot/sessions/sessions.json
+.ficsbot/workspace/agents copy 2.md
+.ficsbot/workspace/agents copy mem.md
+.ficsbot/workspace/agents copy ori.md
+.ficsbot/workspace/agents copy.md
+.ficsbot/workspace/.clawhub/lock.json
+.ficsbot/workspace/config/mcporter.json
+.ficsbot/workspace/skills/multi-search-engine-2.0.1.zip
+REFLECTION_ARCHITECTURE_PLAN.md

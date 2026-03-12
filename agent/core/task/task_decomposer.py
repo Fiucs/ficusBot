@@ -124,7 +124,7 @@ class TaskDecomposer:
         total_completion_tokens = 0
         
         logger.info(f"{Fore.CYAN}[任务分析] 开始分析任务: {user_task[:50]}...{Style.RESET_ALL}")
-        logger.info(f"{Fore.CYAN}[任务分析] 可用能力标签: {len(ability_tags)} 个{Style.RESET_ALL}")
+        logger.debug(f"{Fore.CYAN}[任务分析] 可用能力标签: {len(ability_tags)} 个{Style.RESET_ALL}")
         
         if pending_task:
             logger.info(f"{Fore.CYAN}[任务分析] 存在未完成任务: {pending_task.get('task_goal', '')}{Style.RESET_ALL}")
@@ -143,7 +143,7 @@ class TaskDecomposer:
         
         for attempt in range(self.MAX_RETRIES):
             try:
-                logger.info(f"{Fore.CYAN}[任务分析] 第 {attempt + 1}/{self.MAX_RETRIES} 次尝试{Style.RESET_ALL}")
+                logger.debug(f"{Fore.CYAN}[任务分析] 第 {attempt + 1}/{self.MAX_RETRIES} 次尝试{Style.RESET_ALL}")
                 
                 response = self.llm_client.chat_completion(messages=messages, stream=False)
                 
@@ -187,7 +187,7 @@ class TaskDecomposer:
                 logger.info(f"{Fore.GREEN}[任务分析] 分析成功，task_type: {task_type}{Style.RESET_ALL}")
                 
                 if task_type == "new_task":
-                    logger.info(f"{Fore.GREEN}[任务分析] 步骤数: {task_tree.get('total_steps', 0)}{Style.RESET_ALL}")
+                    logger.debug(f"{Fore.GREEN}[任务分析] 步骤数: {task_tree.get('total_steps', 0)}{Style.RESET_ALL}")
                 
                 task_tree["prompt_tokens"] = total_prompt_tokens
                 task_tree["completion_tokens"] = total_completion_tokens
@@ -328,7 +328,7 @@ class TaskDecomposer:
 **核心规则：默认合并，只有满足以下条件才拆分**
 
 ### 应该拆分的情况（满足其一）：
-1. **独立输出操作**：需要保存文件、发邮件、发微信、调用API等
+1. **独立输出操作**：需要读文件，保存文件、发邮件、发微信、调用API等
 2. **多目标输出**：需要产生多个独立结果（如：搜索A和B，分别保存）
 3. **明确的中断点**：用户明确要求分步骤执行
 

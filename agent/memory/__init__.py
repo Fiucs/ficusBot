@@ -11,8 +11,15 @@
 - 持久化记忆：存储重要对话内容、用户偏好、任务结果等
 - 语义搜索：通过自然语言查询相关记忆和工具
 - 工具库管理：自动索引所有可用工具，支持语义检索
+
+模块结构:
+    - MemorySystem: 记忆系统主入口
+    - EmbeddingService: 嵌入服务
+    - ToolStore: 工具存储
 """
 
 from agent.memory.memory_system import MemorySystem
+from agent.memory.embedding_service import EmbeddingService
+from agent.memory.tool_store import ToolStore
 
-__all__ = ["MemorySystem"]
+__all__ = ["MemorySystem", "EmbeddingService", "ToolStore"]

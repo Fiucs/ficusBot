@@ -3,6 +3,7 @@
 # ======================================
 import os
 import time
+from pathlib import Path
 from pickle import GLOBAL
 import json5
 import yaml
@@ -11,17 +12,44 @@ from loguru import logger
 
 T = TypeVar("T")
 
+
+def _get_ficsbot_dir() -> str:
+    """
+    获取 FicsBot 配置目录路径
+    
+    优先级：
+    1. 环境变量 FICSBOT_HOME
+    2. 用户主目录 ~/.ficsbot
+    3. 项目目录 ./.ficsbot（开发模式）
+    
+    Returns:
+        配置目录的绝对路径
+    """
+    if os.environ.get("FICSBOT_HOME"):
+        return os.path.abspath(os.environ["FICSBOT_HOME"])
+    
+    user_home_dir = Path.home() / ".ficsbot"
+    if user_home_dir.exists():
+        return str(user_home_dir)
+    
+    project_dir = Path.cwd() / ".ficsbot"
+    if project_dir.exists():
+        return str(project_dir)
+    
+    return str(user_home_dir)
+
+
 class ConfigLoader:
     _instance = None
-    FICSBOT_DIR = "./.ficsbot"
-    CONFIG_JSON_PATH = "./.ficsbot/config.json"
-    CONFIG_YAML_PATH = "./.ficsbot/config.yaml"
+    FICSBOT_DIR = _get_ficsbot_dir()
+    CONFIG_JSON_PATH = os.path.join(FICSBOT_DIR, "config.json")
+    CONFIG_YAML_PATH = os.path.join(FICSBOT_DIR, "config.yaml")
     DEFAULT_JSON_TEMPLATE = '''{
-    // 基础路径配置（统一存放于 .ficsbot 目录）
-    "workspace_root": "./.ficsbot/workspace",
+    // 基础路径配置（使用 {ficsbot_dir} 变量，启动时自动替换）
+    "workspace_root": "{ficsbot_dir}/workspace",
     // 文件操作白名单：仅允许访问这些目录
     "file_allow_list": [
-        "./.ficsbot/workspace"
+        "{ficsbot_dir}/workspace"
     ],
     // Shell命令白名单：仅允许执行这些命令（为空则不限制，优先级高于黑名单）
     "shell_cmd_whitelist": [],
@@ -39,7 +67,7 @@ class ConfigLoader:
     ],
     // Shell路径白名单：仅允许在这些目录执行（为空则不限制，优先级高于黑名单）
     "shell_path_whitelist": [
-        "./.ficsbot/workspace"
+        "{ficsbot_dir}/workspace"
     ],
     // Shell路径黑名单：禁止在这些目录执行（白名单存在时此配置失效）
     "shell_path_deny_list": [],
@@ -120,7 +148,7 @@ class ConfigLoader:
     // 日志配置
     "log": {
         "enable_file": false,
-        "log_dir": "./.ficsbot/logs",
+        "log_dir": "{ficsbot_dir}/logs",
         "level": "INFO",
         "console_level": "DEBUG",
         "rotation": "10 MB",
@@ -130,7 +158,7 @@ class ConfigLoader:
     // 会话持久化配置
     "session": {
         "enable_persistence": true,
-        "storage_dir": "./.ficsbot/sessions",
+        "storage_dir": "{ficsbot_dir}/sessions",
         "max_sessions": 100,
         "expire_days": 30,
         "auto_save": true,
@@ -151,8 +179,16 @@ class ConfigLoader:
     }
 }
 '''
-    # 无注释的默认配置字典（用于合并兜底）
-    DEFAULT_CONFIG = json5.loads(DEFAULT_JSON_TEMPLATE)
+    
+    @classmethod
+    def _get_default_config(cls) -> Dict:
+        """获取默认配置（动态替换变量）"""
+        # 将 Windows 反斜杠转换为正斜杠，避免 JSON 解析时误解释转义字符
+        ficsbot_dir_fwd = cls.FICSBOT_DIR.replace("\\", "/")
+        template = cls.DEFAULT_JSON_TEMPLATE.replace("{ficsbot_dir}", ficsbot_dir_fwd)
+        return json5.loads(template)
+    
+    DEFAULT_CONFIG = property(lambda self: self._get_default_config())
 
     def __new__(cls):
         if cls._instance is None:
@@ -164,7 +200,7 @@ class ConfigLoader:
         init_start = time.time()
         self.current_config_path = None
         self.config_type = None
-        self.config = self.DEFAULT_CONFIG.copy()
+        self.config = self._get_default_config()
 
         load_start = time.time()
         self._load_config()
@@ -207,32 +243,38 @@ class ConfigLoader:
                 return
         # 3. 无任何配置文件，生成带注释的默认config.json
         else:
+            config_template = self.DEFAULT_JSON_TEMPLATE.replace("{ficsbot_dir}", self.FICSBOT_DIR)
             with open(self.CONFIG_JSON_PATH, "w", encoding="utf-8") as f:
-                f.write(self.DEFAULT_JSON_TEMPLATE)
+                f.write(config_template)
             self.current_config_path = self.CONFIG_JSON_PATH
             self.config_type = "json"
             logger.info(f"✅ 已生成默认配置文件：{self.CONFIG_JSON_PATH} (带注释JSON格式)")
-            user_config = self.DEFAULT_CONFIG.copy()
+            user_config = json5.loads(config_template)
         step_times["load_file"] = (time.time() - step_start) * 1000
 
         # 4. 合并用户配置与默认配置（兜底缺失项）
         step_start = time.time()
-        self.config = self._merge_config(self.DEFAULT_CONFIG, user_config)
+        self.config = self._merge_config(self._get_default_config(), user_config)
         step_times["merge"] = (time.time() - step_start) * 1000
 
-        # 5. 校验默认模型
+        # 5. 规范化路径（转换为绝对路径）
+        step_start = time.time()
+        self._normalize_paths()
+        step_times["normalize"] = (time.time() - step_start) * 1000
+
+        # 6. 校验默认模型
         step_start = time.time()
         self._validate_default_model()
         step_times["validate"] = (time.time() - step_start) * 1000
 
-        # 6. 自动创建必要目录
+        # 7. 确保必要目录存在
         step_start = time.time()
-        self._init_dirs()
-        step_times["init_dirs"] = (time.time() - step_start) * 1000
+        self._ensure_dirs()
+        step_times["ensure_dirs"] = (time.time() - step_start) * 1000
 
         logger.debug(f"[_load_config 详细] load_file={step_times['load_file']:.2f}ms, "
-                     f"merge={step_times['merge']:.2f}ms, validate={step_times['validate']:.2f}ms, "
-                     f"init_dirs={step_times['init_dirs']:.2f}ms")
+                     f"merge={step_times['merge']:.2f}ms, normalize={step_times['normalize']:.2f}ms, "
+                     f"validate={step_times['validate']:.2f}ms, ensure_dirs={step_times['ensure_dirs']:.2f}ms")
 
     def _merge_config(self, default: Dict, user: Dict) -> Dict:
         """递归合并配置，用户配置覆盖默认值"""
@@ -243,6 +285,53 @@ class ConfigLoader:
             else:
                 merged[k] = v
         return merged
+
+    def _normalize_paths(self):
+        """
+        规范化配置中的路径（转换为绝对路径）
+        
+        处理以下路径配置：
+        - workspace_root
+        - file_allow_list
+        - log.log_dir
+        - session.storage_dir
+        - memory.db_path
+        - memory.index_path
+        - memory.embedding.cache_folder
+        """
+        if "workspace_root" in self.config:
+            self.config["workspace_root"] = os.path.abspath(self.config["workspace_root"])
+        
+        if "file_allow_list" in self.config:
+            self.config["file_allow_list"] = [
+                os.path.abspath(p) for p in self.config.get("file_allow_list", [])
+            ]
+        
+        if "log" in self.config and "log_dir" in self.config["log"]:
+            self.config["log"]["log_dir"] = os.path.abspath(self.config["log"]["log_dir"])
+        
+        if "session" in self.config and "storage_dir" in self.config["session"]:
+            self.config["session"]["storage_dir"] = os.path.abspath(
+                self.config["session"]["storage_dir"]
+            )
+        
+        workspace = self.config.get("workspace_root", ".")
+        # 使用正斜杠替换变量，避免 Windows 反斜杠被解释为转义字符
+        workspace_fwd = workspace.replace("\\", "/")
+
+        if "memory" in self.config:
+            memory_config = self.config["memory"]
+            if "db_path" in memory_config:
+                db_path = memory_config["db_path"].replace("{workspace_root}", workspace_fwd)
+                memory_config["db_path"] = os.path.abspath(db_path)
+            if "index_path" in memory_config:
+                index_path = memory_config["index_path"].replace("{workspace_root}", workspace_fwd)
+                memory_config["index_path"] = os.path.abspath(index_path)
+            if "embedding" in memory_config:
+                embedding = memory_config["embedding"]
+                if "cache_folder" in embedding:
+                    cache_folder = embedding["cache_folder"].replace("{workspace_root}", workspace_fwd)
+                    embedding["cache_folder"] = os.path.abspath(cache_folder)
 
     def _build_flatten_models(self) -> Dict[str, Dict]:
         """把厂商分组配置扁平化为「厂商/模型别名」为key的字典"""
@@ -282,8 +371,15 @@ class ConfigLoader:
                 raise Exception("配置文件中未配置任何可用模型，请检查llm.providers配置")
         self._flatten_models = flatten_models
 
-    def _init_dirs(self):
-        """自动创建必要目录"""
+    def _ensure_dirs(self):
+        """
+        确保必要目录存在（启动时静默调用）
+        
+        只创建缺失的目录，不创建配置文件。
+        与 initialize() 方法配合使用：
+        - initialize(): 显式初始化，创建目录 + 生成配置文件
+        - _ensure_dirs(): 启动时静默确保目录存在
+        """
         os.makedirs(self.FICSBOT_DIR, exist_ok=True)
         os.makedirs(self.config["workspace_root"], exist_ok=True)
         os.makedirs(os.path.join(self.config["workspace_root"], "skills"), exist_ok=True)
@@ -296,6 +392,57 @@ class ConfigLoader:
         os.makedirs(session_dir, exist_ok=True)
         for path in self.config.get("file_allow_list", []):
             os.makedirs(path, exist_ok=True)
+    
+    @classmethod
+    def initialize(cls, path: str = None, force: bool = False) -> str:
+        """
+        显式初始化 FicsBot 配置目录（CLI 调用）
+        
+        Args:
+            path: 自定义路径，None 则使用默认规则
+            force: 是否强制重新初始化（覆盖现有配置）
+            
+        Returns:
+            创建的配置目录路径
+            
+        Usage:
+            # CLI 调用示例
+            ficusbot init                    # 初始化到默认目录
+            ficusbot init --path /custom     # 初始化到自定义目录
+            ficusbot init --force            # 强制重新初始化
+        """
+        if path:
+            ficsbot_dir = os.path.abspath(path)
+        else:
+            ficsbot_dir = _get_ficsbot_dir()
+        
+        config_path = os.path.join(ficsbot_dir, "config.json")
+        
+        if os.path.exists(config_path) and not force:
+            logger.warning(f"⚠️  配置目录已存在：{ficsbot_dir}")
+            logger.info("   使用 --force 参数强制重新初始化")
+            return ficsbot_dir
+        
+        os.makedirs(ficsbot_dir, exist_ok=True)
+        
+        if not os.path.exists(config_path) or force:
+            # 将 Windows 反斜杠转换为正斜杠，避免生成的配置文件包含转义字符
+            ficsbot_dir_fwd = ficsbot_dir.replace("\\", "/")
+            template = cls.DEFAULT_JSON_TEMPLATE.replace("{ficsbot_dir}", ficsbot_dir_fwd)
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(template)
+            logger.info(f"✅ 已创建配置文件：{config_path}")
+        
+        workspace = os.path.join(ficsbot_dir, "workspace")
+        os.makedirs(os.path.join(workspace, "skills"), exist_ok=True)
+        os.makedirs(os.path.join(workspace, "tasks"), exist_ok=True)
+        os.makedirs(os.path.join(workspace, "memory"), exist_ok=True)
+        os.makedirs(os.path.join(workspace, "models"), exist_ok=True)
+        os.makedirs(os.path.join(ficsbot_dir, "logs"), exist_ok=True)
+        os.makedirs(os.path.join(ficsbot_dir, "sessions"), exist_ok=True)
+        
+        logger.info(f"✅ FicusBot 初始化完成：{ficsbot_dir}")
+        return ficsbot_dir
 
     def reload(self):
         """热重载配置文件"""

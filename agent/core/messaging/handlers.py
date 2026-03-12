@@ -125,7 +125,7 @@ class ChatHandler:
         
         agents = self._get_target_agents(message)
         agent_ids = [a.agent_id for a in agents]
-        logger.info(f"[ChatHandler] 🎯 目标 Agent: {agent_ids}")
+        logger.debug(f"[ChatHandler] 🎯 目标 Agent: {agent_ids}")
         
         if len(agents) == 1:
             logger.debug(f"[ChatHandler] 单 Agent 处理模式")
@@ -279,7 +279,7 @@ class ChatHandler:
             logger.warning(f"[ChatHandler] 流式模式不支持多 Agent，仅使用第一个: {agents[0].agent_id}")
         
         agent = agents[0]
-        logger.info(f"[ChatHandler] 🎯 目标 Agent: {agent.agent_id}")
+        logger.debug(f"[ChatHandler] 🎯 目标 Agent: {agent.agent_id}")
         
         try:
             async def stream_generator():

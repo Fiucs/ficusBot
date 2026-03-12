@@ -141,11 +141,11 @@ class MessageChannel:
         logger.debug(f"[MessageChannel] 用户ID: {message.user_id} | 会话ID: {message.session_id}")
         logger.debug(f"[MessageChannel] 元数据: {message.metadata}")
         logger.debug(f"[MessageChannel] 等待响应: {wait_for_response}, 超时: {timeout}s")
-        logger.info(f"[MessageChannel] 👥 当前订阅者: {list(self._subscribers.keys())}")
+        logger.debug(f"[MessageChannel] 👥 当前订阅者: {list(self._subscribers.keys())}")
         
         matched_handlers = self._find_matched_handlers(message)
         
-        logger.info(f"[MessageChannel] 🎯 匹配到 {len(matched_handlers)} 个处理器: {[name for name, _ in matched_handlers]}")
+        logger.debug(f"[MessageChannel] 🎯 匹配到 {len(matched_handlers)} 个处理器: {[name for name, _ in matched_handlers]}")
         
         if not matched_handlers:
             logger.warning(f"[MessageChannel] 无订阅者处理消息: {message.id}")
@@ -446,8 +446,8 @@ class MessageChannel:
             logger.warning(f"[MessageChannel] ⚠️ 没有匹配的处理器")
             return StreamResponse.error_response(message.id, "No matched handler")
         
-        logger.info(f"[MessageChannel] 🎯 匹配到 {len(matched_handlers)} 个处理器: {[name for name, _ in matched_handlers]}")
-        
+        logger.debug(f"[MessageChannel] 🎯 匹配到 {len(matched_handlers)} 个处理器: {[name for name, _ in matched_handlers]}")
+
         name, handler = matched_handlers[0]
         
         if len(matched_handlers) > 1:

@@ -1035,7 +1035,7 @@ class ConversationManager:
                 else:
                     self.system_prompt = context_content + "\n\n" + self.system_prompt
                 
-                logger.info(f"[任务状态注入] 成功注入任务上下文 - 进度: {task_context.get('completed_steps', 0)}/{task_context.get('total_steps', 0)}")
+                logger.debug(f"[任务状态注入] 成功注入任务上下文 - 进度: {task_context.get('completed_steps', 0)}/{task_context.get('total_steps', 0)}")
                 return True
             except Exception as e:
                 logger.error(f"[任务状态注入] 失败: {e}")

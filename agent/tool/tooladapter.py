@@ -283,7 +283,8 @@ class ToolAdapter:
         resource_type: str = "all",
         top_k: int = 10,
         search_type: str = None,
-        distance_threshold: float = None
+        distance_threshold: float = None,
+        date_range: tuple = None
     ) -> Dict[str, Any]:
         """
         发现可用资源：工具、技能、记忆
@@ -297,6 +298,7 @@ class ToolAdapter:
             top_k: 返回数量
             search_type: 兼容旧参数名，优先使用 resource_type
             distance_threshold: L2 距离阈值，距离越小越相似，默认从配置读取
+            date_range: 日期范围过滤（记忆），格式：(start_date, end_date)，如 ("2026-03-01", "2026-03-06")
 
         Returns:
             {"status": "success", "message": "...", "data": {"tools": [...], "memories": [...]}}
@@ -312,20 +314,20 @@ class ToolAdapter:
 
         # 处理空查询：当 query 为空时，使用较大的距离阈值以返回更多结果
         if not query or query.strip() == "":
-            logger.info(f"[发现] 空查询模式，返回所有资源, resource_type={resource_type}, top_k={top_k}")
+            logger.debug(f"[发现] 空查询模式，返回所有资源, resource_type={resource_type}, top_k={top_k}")
             # 空查询时使用一个较大的阈值以确保返回所有结果
             distance_threshold = max(distance_threshold * 10, 100.0)
             query = ""
 
-        logger.info(f"[发现] 开始搜索, query={query}, resource_type={resource_type}, top_k={top_k}, threshold={distance_threshold}")
-        
+        logger.debug(f"[发现] 开始搜索, query={query}, resource_type={resource_type}, top_k={top_k}, threshold={distance_threshold}")
+
         try:
             results = self._run_async(
-                self.memory_system.search(query, resource_type, top_k, distance_threshold=distance_threshold)
+                self.memory_system.search(query, resource_type, top_k, distance_threshold=distance_threshold, date_range=date_range)
             )
-            
-            logger.info(f"[发现] 搜索结果: {len(results.get('tools', []))} 个工具, {len(results.get('memories', []))} 条记忆")
-            
+
+            logger.debug(f"[发现] 搜索结果: {len(results.get('tools', []))} 个工具, {len(results.get('memories', []))} 条记忆")
+
             registered_tools = []
             for tool_def in results.get("tools", []):
                 func_def = tool_def.get("function", tool_def)
@@ -333,16 +335,16 @@ class ToolAdapter:
                 distance = tool_def.get("_distance", 0)
                 if not tool_name:
                     continue
-                
+
                 if self._register_skill_tool(tool_name, func_def):
                     registered_tools.append(tool_name)
-                    logger.info(f"[发现] ✓ 动态注册工具: {tool_name}, distance={distance:.4f}, 当前工具总数: {len(self.tools)}")
+                    logger.debug(f"[发现] ✓ 动态注册工具: {tool_name}, distance={distance:.4f}, 当前工具总数: {len(self.tools)}")
                 elif tool_name in self.tools:
                     logger.debug(f"[发现] 工具已存在: {tool_name}")
-            
+
             tools_count = len(results.get("tools", []))
             memories_count = len(results.get("memories", []))
-            
+
             message_parts = []
             if memories_count > 0:
                 message_parts.append(f"{memories_count} 条记忆")
@@ -350,10 +352,10 @@ class ToolAdapter:
                 message_parts.append(f"{tools_count} 个工具")
             if registered_tools:
                 message_parts.append(f"已注册 {len(registered_tools)} 个工具供直接调用")
-            
+
             message = f"找到 {', '.join(message_parts)}" if message_parts else "未找到相关内容"
-            
-            logger.info(f"[发现] 完成: {message}")
+
+            logger.debug(f"[发现] 完成: {message}")
             
             return {
                 "status": "success",

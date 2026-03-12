@@ -157,7 +157,7 @@ class TaskTreeManager:
             
             self._init_results_file(task_id)
             
-            logger.info(f"{Fore.GREEN}[任务树管理] 任务树已保存: {task_id}{Style.RESET_ALL}")
+            logger.debug(f"{Fore.GREEN}[任务树管理] 任务树已保存: {task_id}{Style.RESET_ALL}")
             return True
             
         except Exception as e:
@@ -184,7 +184,7 @@ class TaskTreeManager:
             with open(task_tree_file, "r", encoding="utf-8") as f:
                 task_tree = json.load(f)
             
-            logger.info(f"{Fore.GREEN}[任务树管理] 任务树已加载: {task_id}{Style.RESET_ALL}")
+            logger.debug(f"{Fore.GREEN}[任务树管理] 任务树已加载: {task_id}{Style.RESET_ALL}")
             return task_tree
             
         except Exception as e:
@@ -345,7 +345,7 @@ class TaskTreeManager:
                 
                 dep = step.get("dependent_on")
                 if dep is None or dep in completed_set:
-                    logger.info(f"{Fore.CYAN}[任务树管理] 获取可执行步骤: {step['step_id']} (状态: {step['status']}, 重试: {retry_count}/{self.MAX_STEP_RETRIES}){Style.RESET_ALL}")
+                    logger.debug(f"{Fore.CYAN}[任务树管理] 获取可执行步骤: {step['step_id']} (状态: {step['status']}, 重试: {retry_count}/{self.MAX_STEP_RETRIES}){Style.RESET_ALL}")
                     return step
             
             logger.info(f"{Fore.CYAN}[任务树管理] 无可执行步骤{Style.RESET_ALL}")

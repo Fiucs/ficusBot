@@ -444,7 +444,7 @@ class LLMClient:
 
         return kwargs
     def chat_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, stream: Optional[bool] = None
-                            ,custom_model: Optional[str] = None):
+                            ,custom_model: Optional[str] = None, tool_choice: Optional[Union[str, Dict[str, Any]]] = None):
         """
         调用大模型进行对话补全
         
@@ -455,6 +455,10 @@ class LLMClient:
             tools: 可选的工具定义列表，用于Function Calling
             stream: 是否使用流式输出，None则使用配置默认值
             custom_model: 自定义模型名称，覆盖当前配置
+            tool_choice: 工具选择策略，控制模型是否必须使用工具
+                - "auto": 模型自主决定是否使用工具（默认）
+                - "required": 强制使用至少一个工具
+                - {"type": "function", "function": {"name": "xxx"}}: 强制使用指定工具
             
         Returns:
             大模型响应对象
@@ -489,7 +493,8 @@ class LLMClient:
                 kwargs["api_base"] = api_base
             if tools:
                 kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+                # 使用传入的 tool_choice，默认为 "auto"
+                kwargs["tool_choice"] = tool_choice if tool_choice is not None else "auto"
             
             kwargs = self._build_thinking_params(config, kwargs)
             kwargs = self._merge_extra_body(config, kwargs)
