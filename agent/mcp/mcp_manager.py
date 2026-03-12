@@ -86,9 +86,11 @@ class MCPManager:
             else:
                 return loop.run_until_complete(coro)
         except RuntimeError as e:
-            # 事件循环问题，使用 asyncio.run 创建新循环
             logger.debug(f"[MCP] 事件循环问题，使用新循环: {e}")
-            return asyncio.run(coro)
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result()
     
     def load_servers(self) -> int:
         """

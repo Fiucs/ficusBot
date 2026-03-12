@@ -25,7 +25,7 @@
     {
       "name": "file_write",
       "method": "write",
-      "description": "Create or overwrite file. Write code, configs, text. Params: file_path required, content required, overwrite optional (true). Ex: file_write({file_path:'test.py',content:'print(1)' })",
+      "description": "创建新文件，完全覆盖写入文件。参数: file_path(必填,文件路径), content(必填,写入内容), overwrite(可选,是否覆盖,默认true)。使用前请确认是否需要保留原文件内容，如需追加请使用file_append。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -39,7 +39,7 @@
     {
       "name": "file_append",
       "method": "append",
-      "description": "Append content to file end. Add logs, comments. Params: file_path required, content required. Ex: file_append({file_path:'log.txt',content:'new line'})",
+      "description": "write content to file end. Add logs, comments. Params: file_path required, content required. Ex: file_append({file_path:'log.txt',content:'new line'})",
       "parameters": {
         "type": "object",
         "properties": {
@@ -49,32 +49,32 @@
         "required": ["file_path", "content"]
       }
     },
-    {
-      "name": "file_list_dir",
-      "method": "list_dir",
-      "description": "List directory contents. MUST use a confirmed path. Params: dir_path optional, show_hidden optional. Ex: file_list_dir({dir_path:'src'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "dir_path": {"type": "string", "description": "目录路径（相对路径或绝对路径，必须是已确认的路径），默认当前目录"},
-          "show_hidden": {"type": "boolean", "description": "是否显示隐藏文件，默认false"}
-        }
-      }
-    },
-    {
-      "name": "file_find",
-      "method": "find",
-      "description": "Recursively search files. MUST use a confirmed root_path. Params: root_path required, pattern optional, file_type optional, content_keyword optional. Ex: file_find({root_path:'.',pattern:'*.py'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "root_path": {"type": "string", "description": "搜索根目录路径（相对路径或绝对路径，必须是已确认的路径），默认当前目录"},
-          "pattern": {"type": "string", "description": "文件名通配符"},
-          "file_type": {"type": "string", "description": "类型过滤：all/file/dir，默认all"},
-          "content_keyword": {"type": "string", "description": "文件内容关键词"}
-        }
-      }
-    },
+    // {
+    //   "name": "file_list_dir",
+    //   "method": "list_dir",
+    //   "description": "List directory contents. MUST use a confirmed path. Params: dir_path optional, show_hidden optional. Ex: file_list_dir({dir_path:'src'})",
+    //   "parameters": {
+    //     "type": "object",
+    //     "properties": {
+    //       "dir_path": {"type": "string", "description": "目录路径（相对路径或绝对路径，必须是已确认的路径），默认当前目录"},
+    //       "show_hidden": {"type": "boolean", "description": "是否显示隐藏文件，默认false"}
+    //     }
+    //   }
+    // },
+    // {
+    //   "name": "file_find",
+    //   "method": "find",
+    //   "description": "Recursively search files. MUST use a confirmed root_path. Params: root_path required, pattern optional, file_type optional, content_keyword optional. Ex: file_find({root_path:'.',pattern:'*.py'})",
+    //   "parameters": {
+    //     "type": "object",
+    //     "properties": {
+    //       "root_path": {"type": "string", "description": "搜索根目录路径（相对路径或绝对路径，必须是已确认的路径），默认当前目录"},
+    //       "pattern": {"type": "string", "description": "文件名通配符"},
+    //       "file_type": {"type": "string", "description": "类型过滤：all/file/dir，默认all"},
+    //       "content_keyword": {"type": "string", "description": "文件内容关键词"}
+    //     }
+    //   }
+    // },
     {
       "name": "file_exists",
       "method": "exists",
@@ -87,22 +87,22 @@
         "required": ["path"]
       }
     },
-    {
-      // 获取系统特殊文件夹路径
-      // Windows: 使用 PowerShell [Environment]::GetFolderPath()
-      // Linux/Mac: 使用 xdg-user-dir 或环境变量
-      // 支持中英文名称：Desktop/桌面, Downloads/下载, Documents/文档等
-      "name": "file_get_system_folder",
-      "method": "get_system_folder",
-      "description": "Get system special folder path (Windows/Linux/Mac). Retrieve Desktop, Downloads, Documents, Pictures, Videos, Music folders. Supports both English and Chinese names. Returns absolute path for file operations. Use this first before file_list_dir/file_find when targeting system folders. Params: folder_name required. Ex: file_get_system_folder({folder_name:'Desktop'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "folder_name": {"type": "string", "description": "文件夹名称，支持Desktop(桌面)/Downloads(下载)/Documents(文档)/Pictures(图片)/Videos(视频)/Music(音乐)/UserProfile(用户目录)，支持Windows/Linux/Mac"}
-        },
-        "required": ["folder_name"]
-      }
-    }
+    // {
+    //   // 获取系统特殊文件夹路径
+    //   // Windows: 使用 PowerShell [Environment]::GetFolderPath()
+    //   // Linux/Mac: 使用 xdg-user-dir 或环境变量
+    //   // 支持中英文名称：Desktop/桌面, Downloads/下载, Documents/文档等
+    //   "name": "file_get_system_folder",
+    //   "method": "get_system_folder",
+    //   "description": "Get system special folder path (Windows/Linux/Mac). Retrieve Desktop, Downloads, Documents, Pictures, Videos, Music folders. Supports both English and Chinese names. Returns absolute path for file operations. Use this first before file_list_dir/file_find when targeting system folders. Params: folder_name required. Ex: file_get_system_folder({folder_name:'Desktop'})",
+    //   "parameters": {
+    //     "type": "object",
+    //     "properties": {
+    //       "folder_name": {"type": "string", "description": "文件夹名称，支持Desktop(桌面)/Downloads(下载)/Documents(文档)/Pictures(图片)/Videos(视频)/Music(音乐)/UserProfile(用户目录)，支持Windows/Linux/Mac"}
+    //     },
+    //     "required": ["folder_name"]
+    //   }
+    // }
   ],
 
   // ==========================================
@@ -169,25 +169,56 @@
       }
     },
     {
-      "name": "search_memory",
-      "description": "搜索长期记忆或工具。使用场景：(1)查询用户偏好、历史决策、先前工作时，search_type='memory'；(2)常驻工具和技能列表都无法满足需求，需要发现新工具时，search_type='tool'；(3)不确定时用 search_type='all'。",
+      "name": "discover",
+      "description": "发现可用资源：工具、技能、记忆。当常驻工具无法满足需求时调用。参数: query(可选,搜索关键词,为空时返回所有), resource_type(可选,tool/memory/all,默认all), top_k(可选,返回数量,默认10), distance_threshold(可选,距离阈值,默认1.0,越小越精确)。",
       "parameters": {
         "type": "object",
         "properties": {
-          "query": {"type": "string", "description": "搜索查询，使用自然语言描述要查找的内容"},
-          "search_type": {
+          "query": {"type": "string", "description": "搜索关键词，描述需要的工具功能或记忆内容。为空时返回所有资源", "default": ""},
+          "resource_type": {
             "type": "string",
             "enum": ["all", "memory", "tool"],
-            "description": "搜索范围：memory(用户记忆/偏好/事实), tool(搜索可用工具/技能), all(全部)",
+            "description": "资源类型：tool(工具/技能) / memory(记忆) / all(全部)",
             "default": "all"
           },
           "top_k": {
             "type": "integer",
             "description": "返回结果数量，默认10",
             "default": 10
+          },
+          "distance_threshold": {
+            "type": "number",
+            "description": "L2距离阈值，距离越小越相似。默认1.0，越小结果越精确但可能漏掉相关内容，越大结果越多但可能包含不相关内容。建议范围0.5-1.5",
+            "default": 1.0
           }
         },
-        "required": ["query"]
+        "required": []
+      }
+    },
+    {
+      "name": "list_memories",
+      "description": "列出记忆列表，不需要搜索关键词。当用户询问'我们讨论过什么'、'之前的对话'、'查看所有记忆'时调用。返回记忆总数和指定数量的记忆。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "top_k": {
+            "type": "integer",
+            "description": "返回数量，默认10",
+            "default": 10
+          },
+          "full": {
+            "type": "boolean",
+            "description": "是否返回完整内容，默认true。false时内容会被截断",
+            "default": true
+          },
+          "order": {
+            "type": "string",
+            "enum": ["desc", "asc"],
+            "description": "排序方式：desc(最近的在前，默认) / asc(最早的在前)",
+            "default": "desc"
+          }
+        },
+        "required": []
       }
     },
     // {
@@ -248,158 +279,88 @@
   ],
 
   // ==========================================
-  // 浏览器操作工具
+  // 浏览器操作工具（合并优化版：11→4）
   // 对应 BrowserTool 类中的方法
   // ==========================================
   "browser_tools": [
     {
+      "name": "browser_action",
+      "method": "action",
+      "description": "执行页面交互操作。action类型：click(点击)、input(输入)、scroll(滚动)、send_keys(按键)。Ex: browser_action({action:'click', index:5}) 或 browser_action({action:'input', index:10, text:'hello'})",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["click", "input", "scroll", "send_keys"],
+            "description": "操作类型"
+          },
+          "index": {"type": "integer", "description": "元素索引（click/input时需要）"},
+          "text": {"type": "string", "description": "输入文本（input时需要）"},
+          "clear": {"type": "boolean", "description": "是否清空输入框", "default": true},
+          "direction": {"type": "string", "enum": ["up", "down"], "description": "滚动方向（scroll时需要）", "default": "down"},
+          "pages": {"type": "number", "description": "滚动页数", "default": 1.0},
+          "keys": {"type": "string", "description": "按键序列（send_keys时需要）"}
+        },
+        "required": ["action"]
+      }
+    },
+    {
       "name": "browser_navigate",
       "method": "navigate",
-      "description": "Navigate to URL. Open webpage. Params: url(required). Ex: browser_navigate({url:'https://example.com'})",
+      "description": "页面导航操作。action类型：navigate(打开URL)、back(后退)、forward(前进)。Ex: browser_navigate({url:'https://example.com'}) 或 browser_navigate({action:'back'})",
       "parameters": {
         "type": "object",
         "properties": {
-          "url": {"type": "string", "description": "目标URL"}
-        },
-        "required": ["url"]
-      }
-    },
-    {
-      "name": "browser_click",
-      "method": "click",
-      "description": "Click element by index. Params: index(required, element index from page state). Ex: browser_click({index:5})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "index": {"type": "integer", "description": "页面状态中的元素索引"}
-        },
-        "required": ["index"]
-      }
-    },
-    {
-      "name": "browser_input",
-      "method": "input_text",
-      "description": "Input text into element. Params: index(required), text(required), clear(optional, default true). Ex: browser_input({index:10, text:'hello'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "index": {"type": "integer", "description": "元素索引"},
-          "text": {"type": "string", "description": "输入文本"},
-          "clear": {"type": "boolean", "description": "是否先清空输入框", "default": true}
-        },
-        "required": ["index", "text"]
-      }
-    },
-    {
-      "name": "browser_scroll",
-      "method": "scroll",
-      "description": "Scroll page. Params: direction(optional, up/down, default down), pages(optional, default 1). Ex: browser_scroll({direction:'down', pages:1})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "direction": {"type": "string", "enum": ["up", "down"], "description": "滚动方向", "default": "down"},
-          "pages": {"type": "number", "description": "滚动页数", "default": 1.0}
-        },
-        "required": []
-      }
-    },
-    {
-      "name": "browser_extract",
-      "method": "extract",
-      "description": "Extract page content as plain text. Use format='markdown' only if user explicitly needs markdown format. Ex: browser_extract({}) or browser_extract({selector:'article'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "selector": {"type": "string", "description": "CSS选择器（可选，为空则提取整个页面）"},
-          "format": {"type": "string", "enum": ["text", "markdown"], "description": "输出格式（默认text），仅在明确需要时使用markdown", "default": "text"}
-        },
-        "required": []
-      }
-    },
-    {
-      "name": "browser_send_keys",
-      "method": "send_keys",
-      "description": "Send keyboard keys. Params: keys(required). Ex: browser_send_keys({keys:'Enter'}) or browser_send_keys({keys:'Control+A'})",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "keys": {"type": "string", "description": "按键序列，如 Enter, Tab, Escape, Control+A"}
-        },
-        "required": ["keys"]
-      }
-    },
-    {
-      "name": "browser_go_back",
-      "method": "go_back",
-      "description": "Go back to previous page. No params. Ex: browser_go_back({})",
-      "parameters": {
-        "type": "object",
-        "properties": {},
-        "required": []
-      }
-    },
-    {
-      "name": "browser_get_state",
-      "method": "get_state",
-      "description": "Get page state with clickable elements. Returns URL, title, element list and page summary. Token-optimized with configurable mode.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "mode": {
+          "action": {
             "type": "string",
-            "enum": ["interactive", "minimal", "full"],
-            "description": "提取模式: interactive(仅交互元素), minimal(仅核心元素), full(所有元素). 默认: interactive",
-            "default": "interactive"
+            "enum": ["navigate", "back", "forward"],
+            "default": "navigate",
+            "description": "导航动作"
           },
-          "max_elements": {
-            "type": "integer",
-            "description": "最大返回元素数（默认20，范围5-50）",
-            "default": 20
-          },
-          "prioritize_visible": {
-            "type": "boolean",
-            "description": "仅包含视口可见元素（默认true）",
-            "default": true
-          },
-          "include_summary": {
-            "type": "boolean",
-            "description": "包含页面文本摘要（默认true）",
-            "default": true
-          }
+          "url": {"type": "string", "description": "目标URL（navigate时需要）"}
         },
         "required": []
       }
     },
     {
-      "name": "browser_switch_tab",
-      "method": "switch_tab",
-      "description": "Switch to tab by index. Params: tab_index(required). Ex: browser_switch_tab({tab_index:1})",
+      "name": "browser_tab",
+      "method": "tab",
+      "description": "标签页管理。action类型：list(列出所有)、switch(切换)、close(关闭)。Ex: browser_tab({action:'list'}) 或 browser_tab({action:'switch', tab_index:1})",
       "parameters": {
         "type": "object",
         "properties": {
-          "tab_index": {"type": "integer", "description": "标签页索引（从0开始）"}
+          "action": {
+            "type": "string",
+            "enum": ["list", "switch", "close"],
+            "description": "操作类型"
+          },
+          "tab_index": {"type": "integer", "description": "标签页索引（switch时需要）"}
         },
-        "required": ["tab_index"]
+        "required": ["action"]
       }
     },
     {
-      "name": "browser_close_tab",
-      "method": "close_tab",
-      "description": "Close current tab. No params. Ex: browser_close_tab({})",
+      "name": "browser_read",
+      "method": "read",
+      "description": "读取页面信息。action类型：state(获取页面状态和交互元素)、extract(提取页面内容)。Ex: browser_read({action:'state'}) 或 browser_read({action:'extract', selector:'article'})",
       "parameters": {
         "type": "object",
-        "properties": {},
-        "required": []
-      }
-    },
-    {
-      "name": "browser_list_tabs",
-      "method": "list_tabs",
-      "description": "List all open tabs. No params. Ex: browser_list_tabs({})",
-      "parameters": {
-        "type": "object",
-        "properties": {},
-        "required": []
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["state", "extract"],
+            "default": "state",
+            "description": "读取类型"
+          },
+          "mode": {"type": "string", "enum": ["interactive", "minimal", "full"], "default": "interactive", "description": "提取模式（state时使用）"},
+          "max_elements": {"type": "integer", "default": 20, "description": "最大返回元素数"},
+          "prioritize_visible": {"type": "boolean", "default": true, "description": "仅包含可见元素"},
+          "include_summary": {"type": "boolean", "default": true, "description": "包含页面摘要"},
+          "selector": {"type": "string", "description": "CSS选择器（extract时使用）"},
+          "format": {"type": "string", "enum": ["text", "markdown"], "default": "text", "description": "输出格式（extract时使用）"}
+        },
+        "required": ["action"]
       }
     }
   ]

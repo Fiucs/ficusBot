@@ -23,12 +23,15 @@ class AgentConfig:
         agent_id: Agent 唯一标识符
         description: Agent 描述
         model: 使用的模型（格式：厂商/模型别名）
-        llm_preset: LLM 参数预设名称（引用 llm.agent_presets）
+        llm_preset: LLM 参数预设名称（引用 llm.agent_presets，已废弃，建议直接配置参数）
         tools: 可用工具列表（支持通配符 *）
         skills: 可用技能列表（支持通配符 *）
         sub_agents: 可委托的子代理列表
         system_prompt: 自定义系统提示词
         max_tool_calls: 最大工具调用次数
+        temperature: LLM 温度参数（None 使用全局配置）
+        max_tokens: LLM 最大输出 token 数（None 使用全局配置）
+        timeout: LLM 请求超时时间（None 使用全局配置）
         extra: 额外配置参数
         workspace_root: Agent 专属工作目录（None 使用全局配置）
         file_allow_list: Agent 专属文件白名单（None 使用全局配置）
@@ -48,6 +51,9 @@ class AgentConfig:
     sub_agents: List[str] = field(default_factory=list)
     system_prompt: Optional[str] = None
     max_tool_calls: int = 8
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    timeout: Optional[int] = None
     extra: Dict[str, Any] = field(default_factory=dict)
     workspace_root: Optional[str] = None
     file_allow_list: Optional[List[str]] = None
@@ -80,6 +86,9 @@ class AgentConfig:
             sub_agents=config.get("sub_agents", []),
             system_prompt=config.get("system_prompt"),
             max_tool_calls=config.get("max_tool_calls", 8),
+            temperature=config.get("temperature"),
+            max_tokens=config.get("max_tokens"),
+            timeout=config.get("timeout"),
             extra=config.get("extra", {}),
             workspace_root=config.get("workspace_root"),
             file_allow_list=config.get("file_allow_list"),
@@ -108,6 +117,9 @@ class AgentConfig:
             "sub_agents": self.sub_agents,
             "system_prompt": self.system_prompt,
             "max_tool_calls": self.max_tool_calls,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "timeout": self.timeout,
             "extra": self.extra,
             "workspace_root": self.workspace_root,
             "file_allow_list": self.file_allow_list,
@@ -123,7 +135,7 @@ class AgentConfig:
         """
         获取合并后的 LLM 参数
         
-        合并优先级：llm_preset > llm.global
+        合并优先级：Agent 自身参数 > llm_preset > llm.global
         
         Returns:
             LLM 参数字典
@@ -139,6 +151,13 @@ class AgentConfig:
             presets = GLOBAL_CONFIG.get("llm.agent_presets", {})
             preset_params = presets.get(self.llm_preset, {})
             params.update(preset_params)
+        
+        if self.temperature is not None:
+            params["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            params["max_tokens"] = self.max_tokens
+        if self.timeout is not None:
+            params["timeout"] = self.timeout
         
         return params
     

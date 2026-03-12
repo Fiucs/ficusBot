@@ -135,19 +135,16 @@ class DiscordListener(BaseListener):
     async def _convert_to_unified(self, raw) -> UnifiedMessage:
         message_type = "text"
         content = raw.content or ""
+        images = []
         
         if raw.attachments:
-            if len(raw.attachments) == 1:
-                attachment = raw.attachments[0]
+            for attachment in raw.attachments:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
                     message_type = "image"
+                    images.append(attachment.url)
                 else:
                     message_type = "file"
-                content = f"{content}\n[附件: {attachment.filename}]".strip()
-            else:
-                message_type = "file"
-                files = ", ".join(a.filename for a in raw.attachments)
-                content = f"{content}\n[附件: {files}]".strip()
+                    content = f"{content}\n[附件: {attachment.filename}]".strip()
         
         thread_id = str(raw.thread.id) if raw.thread else None
         
@@ -157,6 +154,7 @@ class DiscordListener(BaseListener):
             platform=self.PLATFORM_NAME,
             type=message_type,
             content=content,
+            images=images,
             user_id=str(raw.author.id),
             chat_id=str(raw.channel.id),
             thread_id=thread_id,

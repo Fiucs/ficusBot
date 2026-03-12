@@ -5,7 +5,7 @@
 
 功能说明:
     - 处理来自监听器的消息
-    - 与 Agent 系统集成，调用 LLM 生成响应
+    - 与 Agent 系统集成，通过 MessageChannel 调用 LLM 生成响应
     - 支持命令处理（/new, /help 等）
     - 会话持久化映射管理
 """
@@ -17,6 +17,8 @@ from loguru import logger
 from .message_bus import MessageBus, UnifiedMessage, OutgoingMessage
 from ..command import CommandHandler, CommandContext, CommandResult
 from .chat_session_map import ChatSessionMap, ChatSessionInfo
+from agent.core.messaging.message import Message, MessageSource, MessageType
+from agent.core.messaging import get_channel
 
 if TYPE_CHECKING:
     from agent.registry import AgentRegistry
@@ -76,8 +78,11 @@ class CoreProcessor:
                 message = result
             
             if message.type == "image":
-                logger.info(f"[CoreProcessor] 📷 收到图片消息，准备转发给 Agent 处理")
-                content = f"[用户发送了一张图片，请回复说：我看到你发送了一张图片，但我目前无法直接查看图片内容。请描述一下图片的内容，或者发送文字消息给我。]"
+                logger.info(f"[CoreProcessor] 📷 收到图片消息，共 {len(message.images)} 张图片")
+                content = message.content or "[用户发送了一张图片]"
+            elif message.images:
+                logger.info(f"[CoreProcessor] 📷 收到带图片的 {message.type} 消息，共 {len(message.images)} 张图片")
+                content = message.content or "[用户发送了一张图片]"
             elif message.type != "text":
                 logger.debug(f"[CoreProcessor] 跳过非文本消息: type={message.type}")
                 return
@@ -140,7 +145,7 @@ class CoreProcessor:
         return self._agent
     
     async def _generate_response_with_content(self, message: UnifiedMessage, content: str) -> Optional[str]:
-        """使用指定内容调用 Agent 生成响应"""
+        """使用指定内容通过 MessageChannel 调用 Agent 生成响应"""
         agent = self._agent
         if not agent:
             logger.warning("[CoreProcessor] Agent 未设置，返回默认响应")
@@ -169,16 +174,35 @@ class CoreProcessor:
                     )
                     logger.info(f"[CoreProcessor] 已创建新会话: {new_session_id}, chat_key: {chat_key}")
             
-            result = agent.chat(content)
+            msg = Message.create(
+                source=MessageSource.BOT,
+                type=MessageType.CHAT,
+                content=content,
+                images=message.images,
+                user_id=message.user_id or message.chat_id,
+                session_id=session_id,
+                metadata={
+                    "target_agent": agent_id,
+                    "listener": message.listener,
+                    "chat_id": message.chat_id,
+                    "thread_id": message.thread_id
+                }
+            )
             
-            if isinstance(result, dict):
-                response = result.get("content", "")
+            logger.info(f"[CoreProcessor] 📤 发送消息到 MessageChannel | Agent: {agent_id}")
+            channel = get_channel()
+            response = channel.publish_sync(msg, timeout=3600.0)
+            
+            if response and response.success:
+                result_content = response.content
             else:
-                response = str(result)
+                error_msg = response.error if response else "无响应"
+                logger.error(f"[CoreProcessor] MessageChannel 响应失败: {error_msg}")
+                result_content = f"🤖 处理失败: {error_msg}"
             
-            response = self._clean_response(response)
+            result_content = self._clean_response(result_content)
             
-            return response
+            return result_content
             
         except Exception as e:
             logger.error(f"[CoreProcessor] 生成响应失败: {e}")

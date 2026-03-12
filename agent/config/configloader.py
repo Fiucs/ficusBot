@@ -13,16 +13,15 @@ T = TypeVar("T")
 
 class ConfigLoader:
     _instance = None
-    # 核心配置路径定义
-    CONFIG_JSON_PATH = "./config.json"
-    CONFIG_YAML_PATH = "./config.yaml"
-    # 带注释的默认JSON配置模板（首次启动自动生成）
+    FICSBOT_DIR = "./.ficsbot"
+    CONFIG_JSON_PATH = "./.ficsbot/config.json"
+    CONFIG_YAML_PATH = "./.ficsbot/config.yaml"
     DEFAULT_JSON_TEMPLATE = '''{
-    // 基础路径配置
-    "workspace_root": "./workspace",
+    // 基础路径配置（统一存放于 .ficsbot 目录）
+    "workspace_root": "./.ficsbot/workspace",
     // 文件操作白名单：仅允许访问这些目录
     "file_allow_list": [
-        "./workspace"
+        "./.ficsbot/workspace"
     ],
     // Shell命令白名单：仅允许执行这些命令（为空则不限制，优先级高于黑名单）
     "shell_cmd_whitelist": [],
@@ -40,7 +39,7 @@ class ConfigLoader:
     ],
     // Shell路径白名单：仅允许在这些目录执行（为空则不限制，优先级高于黑名单）
     "shell_path_whitelist": [
-        "./workspace"
+        "./.ficsbot/workspace"
     ],
     // Shell路径黑名单：禁止在这些目录执行（白名单存在时此配置失效）
     "shell_path_deny_list": [],
@@ -117,7 +116,39 @@ class ConfigLoader:
     "enable_skill_tool": true,
     "enable_mcp": true,
     // 工具执行超时时间（秒）
-    "exec_timeout": 10
+    "exec_timeout": 10,
+    // 日志配置
+    "log": {
+        "enable_file": false,
+        "log_dir": "./.ficsbot/logs",
+        "level": "INFO",
+        "console_level": "DEBUG",
+        "rotation": "10 MB",
+        "retention": "7 days",
+        "enable_console": true
+    },
+    // 会话持久化配置
+    "session": {
+        "enable_persistence": true,
+        "storage_dir": "./.ficsbot/sessions",
+        "max_sessions": 100,
+        "expire_days": 30,
+        "auto_save": true,
+        "auto_save_interval": 5
+    },
+    // 记忆系统配置
+    "memory": {
+        "enabled": true,
+        "db_path": "{workspace_root}/memory/vector_db",
+        "index_path": "{workspace_root}/memory/memory_index",
+        "hot_threshold": 100,
+        "hot_tool_limit": 5,
+        "embedding": {
+            "provider": "local",
+            "local_model": "BAAI/bge-small-zh-v1.5",
+            "cache_folder": "{workspace_root}/models/huggingface"
+        }
+    }
 }
 '''
     # 无注释的默认配置字典（用于合并兜底）
@@ -253,9 +284,17 @@ class ConfigLoader:
 
     def _init_dirs(self):
         """自动创建必要目录"""
+        os.makedirs(self.FICSBOT_DIR, exist_ok=True)
         os.makedirs(self.config["workspace_root"], exist_ok=True)
         os.makedirs(os.path.join(self.config["workspace_root"], "skills"), exist_ok=True)
-        for path in self.config["file_allow_list"]:
+        os.makedirs(os.path.join(self.config["workspace_root"], "tasks"), exist_ok=True)
+        os.makedirs(os.path.join(self.config["workspace_root"], "memory"), exist_ok=True)
+        os.makedirs(os.path.join(self.config["workspace_root"], "models"), exist_ok=True)
+        log_dir = self.config.get("log", {}).get("log_dir", "./.ficsbot/logs")
+        os.makedirs(log_dir, exist_ok=True)
+        session_dir = self.config.get("session", {}).get("storage_dir", "./.ficsbot/sessions")
+        os.makedirs(session_dir, exist_ok=True)
+        for path in self.config.get("file_allow_list", []):
             os.makedirs(path, exist_ok=True)
 
     def reload(self):

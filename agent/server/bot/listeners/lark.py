@@ -22,6 +22,8 @@ import json
 import time
 import queue
 import multiprocessing
+import base64
+import aiohttp
 from typing import Dict, Any
 
 from loguru import logger
@@ -243,6 +245,7 @@ class LarkListener(BaseListener):
         content_raw = message.get("content", "{}")
         
         content = ""
+        images = []
         try:
             if isinstance(content_raw, str):
                 content_data = json.loads(content_raw)
@@ -252,9 +255,30 @@ class LarkListener(BaseListener):
             if message_type == "text":
                 content = content_data.get("text", "")
             elif message_type == "post":
-                content = self._extract_post_content(content_data)
+                content, post_images = await self._extract_post_content(content_data, message.get("message_id"))
+                images.extend(post_images)
             elif message_type == "image":
-                content = "[图片]"
+                logger.info(f"[{self.name}] 📷 收到图片消息，content_data: {content_data}")
+                content = content_data.get("text", "") or ""
+                image_key = content_data.get("image_key")
+                logger.info(f"[{self.name}] 图片 image_key: {image_key}")
+                if image_key:
+                    try:
+                        message_id = message.get("message_id")
+                        image_base64 = await self._download_image(message_id, image_key)
+                        if image_base64:
+                            images.append(image_base64)
+                            logger.info(f"[{self.name}] ✅ 已下载飞书图片，大小: {len(image_base64)} 字符")
+                        else:
+                            logger.warning(f"[{self.name}] ⚠️ 图片下载返回空")
+                            content = f"{content}\n[图片下载失败]".strip()
+                    except Exception as e:
+                        logger.error(f"[{self.name}] ❌ 下载飞书图片失败: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        content = f"{content}\n[图片下载失败: {str(e)[:50]}]".strip()
+                else:
+                    logger.warning(f"[{self.name}] ⚠️ 图片消息没有 image_key")
             else:
                 content = f"[{message_type}]"
         except json.JSONDecodeError:
@@ -266,6 +290,7 @@ class LarkListener(BaseListener):
             platform=self.PLATFORM_NAME,
             type=message_type,
             content=content,
+            images=images,
             user_id=sender_id.get("union_id", "") or sender_id.get("user_id", ""),
             chat_id=message.get("chat_id", ""),
             thread_id=None,
@@ -273,20 +298,138 @@ class LarkListener(BaseListener):
             raw=raw
         )
     
-    def _extract_post_content(self, content_data: dict) -> str:
-        """提取富文本消息内容。"""
-        text_parts = []
+    async def _download_image(self, message_id: str, image_key: str) -> str:
+        """
+        下载飞书消息中的图片并转换为 Base64
         
-        def extract_text(node):
+        使用飞书开放 API: /open-apis/im/v1/messages/{message_id}/resources
+        此 API 用于获取消息中的资源文件（图片、文件等）
+        
+        Args:
+            message_id: 消息 ID
+            image_key: 飞书图片 key
+            
+        Returns:
+            Base64 编码的图片字符串，格式为 "data:image/jpeg;base64,..."
+        """
+        try:
+            if not self._client:
+                logger.error(f"[{self.name}] ❌ 飞书客户端未初始化")
+                return ""
+            
+            logger.info(f"[{self.name}] 📥 开始下载消息图片，message_id: {message_id}, image_key: {image_key}")
+            
+            tenant_access_token = await self._get_tenant_access_token()
+            if not tenant_access_token:
+                logger.error(f"[{self.name}] ❌ 获取 tenant_access_token 失败")
+                return ""
+            
+            url = f"https://open.larksuite.com/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
+            headers = {"Authorization": f"Bearer {tenant_access_token}"}
+            params = {"type": "image"}
+            
+            logger.info(f"[{self.name}] 📥 请求 URL: {url}")
+            logger.info(f"[{self.name}] 📥 请求参数: {params}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params) as response:
+                    logger.info(f"[{self.name}] 📥 响应状态: {response.status}")
+                    content_type = response.headers.get('Content-Type', '')
+                    logger.info(f"[{self.name}] 📥 响应 Content-Type: {content_type}")
+                    
+                    if response.status == 200:
+                        if 'application/json' in content_type:
+                            json_data = await response.json()
+                            logger.error(f"[{self.name}] ❌ 飞书返回 JSON 错误: {json_data}")
+                            return ""
+                        
+                        image_data = await response.read()
+                        mime_type = content_type.split(';')[0].strip() if '/' in content_type else 'image/jpeg'
+                        
+                        image_base64 = base64.b64encode(image_data).decode('utf-8')
+                        logger.info(f"[{self.name}] ✅ 图片下载成功，大小: {len(image_data)} bytes, MIME: {mime_type}")
+                        return f"data:{mime_type};base64,{image_base64}"
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"[{self.name}] ❌ 下载图片失败: status={response.status}, error={error_text}")
+                        return ""
+                        
+        except Exception as e:
+            logger.error(f"[{self.name}] ❌ 下载图片异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return ""
+    
+    async def _get_tenant_access_token(self) -> str:
+        """
+        获取飞书 tenant_access_token
+        
+        Returns:
+            tenant_access_token 字符串
+        """
+        try:
+            import requests
+            
+            url = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
+            payload = {
+                "app_id": self._app_id,
+                "app_secret": self._app_secret
+            }
+            
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(url, json=payload)
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                token = data.get("tenant_access_token", "")
+                logger.debug(f"[{self.name}] ✅ 获取 tenant_access_token 成功")
+                return token
+            else:
+                logger.error(f"[{self.name}] ❌ 获取 tenant_access_token 失败: {response.text}")
+                return ""
+                
+        except Exception as e:
+            logger.error(f"[{self.name}] ❌ 获取 tenant_access_token 异常: {e}")
+            return ""
+    
+    async def _extract_post_content(self, content_data: dict, message_id: str) -> tuple:
+        """
+        提取富文本消息内容（包括图片）。
+        
+        Args:
+            content_data: 富文本消息内容
+            message_id: 消息 ID，用于下载图片
+            
+        Returns:
+            (文本内容, 图片列表)
+        """
+        text_parts = []
+        images = []
+        
+        async def extract_content(node):
             if isinstance(node, dict):
                 if "text" in node:
                     text_parts.append(node["text"])
+                if "tag" in node and node["tag"] == "img":
+                    image_key = node.get("image_key")
+                    if image_key:
+                        logger.info(f"[{self.name}] 📷 富文本中发现图片: {image_key}")
+                        try:
+                            image_base64 = await self._download_image(message_id, image_key)
+                            if image_base64:
+                                images.append(image_base64)
+                                text_parts.append("[图片]")
+                        except Exception as e:
+                            logger.error(f"[{self.name}] ❌ 下载富文本图片失败: {e}")
                 for value in node.values():
                     if isinstance(value, (dict, list)):
-                        extract_text(value)
+                        await extract_content(value)
             elif isinstance(node, list):
                 for item in node:
-                    extract_text(item)
+                    await extract_content(item)
         
-        extract_text(content_data)
-        return "".join(text_parts)
+        await extract_content(content_data)
+        return "".join(text_parts), images

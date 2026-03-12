@@ -11,9 +11,12 @@
 
 核心方法:
     process_tools: 处理工具列表（根据索引文件过滤）
-    search_tools: 搜索记忆索引中的工具
-    save: 保存记忆
+    search_tools: 搜索记忆索引中的工具（单个查询）
+    search_tools_batch: 批量搜索记忆索引中的工具（支持多个查询，自动去重）
+    save: 保存单条记忆
+    save_batch: 批量保存记忆（高性能版本）
     search: 统一搜索（记忆+工具）
+    compact: 压缩数据库表，减少碎片
 
 设计原则:
     - 系统先加载所有工具
@@ -23,7 +26,8 @@
     - add_to_memory=false 保留在工具列表
 """
 
-from typing import List, Dict, Any, Optional
+import threading
+from typing import List, Dict, Any
 from pathlib import Path
 from datetime import datetime
 import json
@@ -33,72 +37,6 @@ import asyncio
 import os
 
 from loguru import logger
-from pydantic import BaseModel, Field
-
-
-class MemoryEntry(BaseModel):
-    """
-    记忆条目数据模型
-    
-    用于存储用户偏好、重要事实、对话记录等信息。
-    
-    Attributes:
-        id: 记忆唯一标识符
-        content: 记忆内容
-        memory_type: 记忆类型（conversation/fact/preference/task/insight/document）
-        importance: 重要性评分（1-10）
-        tags: 标签列表
-        created_at: 创建时间
-    """
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    content: str
-    memory_type: str = Field(default="conversation")
-    importance: int = Field(default=5, ge=1, le=10)
-    tags: List[str] = Field(default_factory=list)
-    created_at: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-
-class ToolIndexEntry(BaseModel):
-    """
-    工具索引配置模型
-    
-    只存储控制配置，不存储完整工具定义。
-    完整工具定义存储在向量数据库中。
-    
-    Attributes:
-        name: 工具名称，唯一标识
-        tool_type: 工具类型（builtin/mcp_server/skill）
-        source: 技能来源路径（仅 skill 类型）
-        mcp_server: MCP Server 名称（仅 mcp_server 类型）
-        enabled: 是否启用（false 则从工具列表移除）
-        add_to_memory: 是否加入记忆索引（true 则按需加载）
-        query_count: 查询次数，用于热点统计
-    """
-    
-    name: str
-    tool_type: str = Field(default="skill")
-    source: Optional[str] = Field(default=None)
-    mcp_server: Optional[str] = Field(default=None)
-    enabled: bool = Field(default=True)
-    add_to_memory: bool = Field(default=True)
-    query_count: int = Field(default=0)
-
-
-class ToolIndex(BaseModel):
-    """工具索引文件模型"""
-    
-    version: str = Field(default="1.0")
-    updated_at: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    tools: List[ToolIndexEntry] = Field(default_factory=list)
-
-
-class MemoryIndex(BaseModel):
-    """记忆索引文件模型"""
-    
-    version: str = Field(default="1.0")
-    updated_at: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    memories: List[MemoryEntry] = Field(default_factory=list)
 
 
 class MemorySystem:
@@ -109,9 +47,12 @@ class MemorySystem:
     
     核心方法:
         process_tools: 处理工具列表（根据索引文件过滤）
-        search_tools: 搜索记忆索引中的工具
-        save: 保存记忆
+        search_tools: 搜索记忆索引中的工具（单个查询）
+        search_tools_batch: 批量搜索记忆索引中的工具（支持多个查询，自动去重）
+        save: 保存单条记忆
+        save_batch: 批量保存记忆（高性能版本）
         search: 统一搜索（记忆+工具）
+        compact: 压缩数据库表，减少碎片
     
     设计原则:
         - 系统先加载所有工具
@@ -128,6 +69,8 @@ class MemorySystem:
         db: LanceDB 连接
         memories_table: 记忆表
         tools_table: 工具表
+        memories_schema: 记忆表 Schema
+        tools_schema: 工具表 Schema
         embedding: 嵌入服务配置
     """
     
@@ -154,12 +97,30 @@ class MemorySystem:
         self.index_path.mkdir(parents=True, exist_ok=True)
         
         self._init_index_files()
-        
         self.embedding = self._init_embedding(config.get("embedding", {}), workspace_root)
-        
         self._init_db()
+        # 开启子线程thread 初始化嵌入模型和数据库
+        # thread = threading.Thread(target=self.thread_safe_embed, args=(self.config, workspace_root))
+        # thread.start()
+        # thread.join()
+        
+        
         
         logger.info(f"记忆系统初始化完成: db={self.db_path}, index={self.index_path}")
+    
+    def thread_safe_embed(self, config: Dict[str, Any], workspace_root: str):
+        """
+        子线程中调用_init_embedding和 self._init_db()
+        Args:
+            config: 嵌入服务配置
+            workspace_root: 工作空间根目录
+        
+        Returns:
+            嵌入向量列表
+        """
+        self.embedding = self._init_embedding(config.get("embedding", {}), workspace_root)
+        self._init_db()
+    
     
     def _init_index_files(self):
         """初始化索引文件（如果不存在则创建，使用 JSON5 格式支持注释）"""
@@ -336,7 +297,7 @@ class MemorySystem:
             logger.info(f"连接向量数据库: {db_path}, 嵌入维度: {embedding_dim}")
             self.db = lancedb.connect(self.db_path)
             
-            memories_schema = pa.schema([
+            self.memories_schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("content", pa.string()),
                 pa.field("embedding", pa.list_(pa.float32(), list_size=embedding_dim)),
@@ -346,7 +307,7 @@ class MemorySystem:
                 pa.field("created_at", pa.string())
             ])
             
-            tools_schema = pa.schema([
+            self.tools_schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("name", pa.string()),
                 pa.field("tool_type", pa.string()),
@@ -358,34 +319,37 @@ class MemorySystem:
             table_names = self.db.table_names()
             
             if "memories" not in table_names:
-                self.memories_table = self.db.create_table("memories", schema=memories_schema, mode="overwrite")
+                self.memories_table = self.db.create_table("memories", schema=self.memories_schema, mode="overwrite")
                 logger.info("创建 memories 表")
             else:
                 self.memories_table = self.db.open_table("memories")
                 existing_dim = self._get_table_embedding_dim(self.memories_table)
                 if existing_dim != embedding_dim:
                     logger.warning(f"memories 表维度不匹配 (现有: {existing_dim}, 需要: {embedding_dim})")
-                    self._migrate_memories_table(embedding_dim, memories_schema)
+                    self._migrate_memories_table(embedding_dim, self.memories_schema)
             
             if "tools" not in table_names:
-                self.tools_table = self.db.create_table("tools", schema=tools_schema, mode="overwrite")
+                self.tools_table = self.db.create_table("tools", schema=self.tools_schema, mode="overwrite")
                 logger.info("创建 tools 表")
             else:
                 self.tools_table = self.db.open_table("tools")
                 existing_dim = self._get_table_embedding_dim(self.tools_table)
                 if existing_dim != embedding_dim:
                     logger.warning(f"tools 表维度不匹配 (现有: {existing_dim}, 需要: {embedding_dim})，重建表")
-                    self.db.drop_table("tools")
-                    self.tools_table = self.db.create_table("tools", schema=tools_schema, mode="overwrite")
+                    self.tools_table = self.db.create_table("tools", schema=self.tools_schema, mode="overwrite")
         except ImportError:
             logger.warning("LanceDB 未安装，记忆系统将使用降级模式（仅 JSON 索引）")
             self.db = None
             self.memories_table = None
             self.tools_table = None
+            self.memories_schema = None
+            self.tools_schema = None
     
     def _migrate_memories_table(self, embedding_dim: int, schema):
         """
         迁移记忆表（切换嵌入模型时重新生成向量）
+        
+        使用批量嵌入提高迁移效率。
         
         Args:
             embedding_dim: 新的嵌入维度
@@ -398,52 +362,58 @@ class MemorySystem:
         
         if not memories:
             logger.info("无记忆数据需要迁移，直接重建表")
-            self.db.drop_table("memories")
             self.memories_table = self.db.create_table("memories", schema=schema, mode="overwrite")
             return
         
         logger.info(f"需要迁移 {len(memories)} 条记忆")
         
-        entries = []
-        for mem in memories:
-            try:
-                embedding = self._embed_sync(mem["content"])
-                if embedding:
-                    entries.append({
-                        "id": mem["id"],
-                        "content": mem["content"],
-                        "embedding": embedding,
-                        "memory_type": mem.get("memory_type", "conversation"),
-                        "importance": mem.get("importance", 5),
-                        "tags": mem.get("tags", []),
-                        "created_at": mem.get("created_at", "")
-                    })
-            except Exception as e:
-                logger.warning(f"迁移记忆失败 (id={mem['id']}): {e}")
+        contents = [mem["content"] for mem in memories]
+        embeddings = self._embed_batch_sync(contents)
         
-        self.db.drop_table("memories")
+        entries = []
+        for i, mem in enumerate(memories):
+            embedding = embeddings[i] if i < len(embeddings) else []
+            if embedding:
+                entries.append({
+                    "id": mem["id"],
+                    "content": mem["content"],
+                    "embedding": embedding,
+                    "memory_type": mem.get("memory_type", "conversation"),
+                    "importance": mem.get("importance", 5),
+                    "tags": mem.get("tags", []),
+                    "created_at": mem.get("created_at", "")
+                })
+        
         self.memories_table = self.db.create_table("memories", schema=schema, mode="overwrite")
         
-        if entries:
-            self.memories_table.add(entries)
+        if self._add_memories_to_db(entries):
             logger.info(f"迁移完成: {len(entries)}/{len(memories)} 条记忆")
         else:
             logger.warning("迁移完成: 无有效记忆")
     
-    def _embed_sync(self, text: str) -> List[float]:
+    def _embed_batch_sync(self, texts: List[str]) -> List[List[float]]:
         """
-        同步获取嵌入向量（用于迁移等场景）
+        批量同步获取嵌入向量（用于迁移等场景）
         
         Args:
-            text: 输入文本
+            texts: 输入文本列表
         
         Returns:
-            嵌入向量列表
+            归一化的嵌入向量列表的列表
         """
+        import numpy as np
+        from concurrent.futures import ThreadPoolExecutor
+        
         if self.embedding["type"] == "local":
-            return self.embedding["model"].encode(text).tolist()
+            embeddings = self.embedding["model"].encode(texts)
         elif self.embedding["type"] == "gguf":
-            return self.embedding["model"].embed(text)
+            model = self.embedding["model"]
+            batch_size = self.embedding.get("batch_size", 8)
+            embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                result = model.create_embedding(batch)
+                embeddings.extend([item["embedding"] for item in result["data"]])
         elif self.embedding["type"] == "api":
             import asyncio
             try:
@@ -452,17 +422,26 @@ class MemorySystem:
                 loop = None
             
             if loop and loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
+                with ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
-                        self._embed(text)
+                        self._embed_batch(texts)
                     )
                     return future.result()
             else:
-                return asyncio.run(self._embed(text))
+                return asyncio.run(self._embed_batch(texts))
         else:
-            return []
+            return [[] for _ in texts]
+        
+        results = []
+        for emb in embeddings:
+            vec = np.array(emb)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            results.append(vec.tolist())
+        
+        return results
     
     def _get_table_embedding_dim(self, table) -> int:
         """
@@ -550,11 +529,15 @@ class MemorySystem:
             llm = Llama(
                 model_path=model_path,
                 embedding=True,
-                n_ctx=512,
+                n_ctx=8192,
+                n_batch=2048,
+                n_ubatch=2048,
+                n_gpu_layers=-1,
+                n_threads=8,
                 verbose=False
             )
             
-            return {"type": "gguf", "model": llm}
+            return {"type": "gguf", "model": llm, "batch_size": 1}
         except ImportError:
             logger.warning("llama-cpp-python 未安装，GGUF 嵌入功能将不可用。安装: pip install llama-cpp-python")
             return {"type": "none"}
@@ -609,45 +592,71 @@ class MemorySystem:
     
     async def _embed(self, text: str) -> List[float]:
         """
-        获取嵌入向量
+        获取嵌入向量（归一化）
         
         Args:
             text: 输入文本
         
         Returns:
-            嵌入向量列表
+            归一化的嵌入向量列表
         """
         if self.embedding["type"] == "local":
-            return self.embedding["model"].encode(text).tolist()
+            embedding = self.embedding["model"].encode(text)
         elif self.embedding["type"] == "gguf":
-            return self.embedding["model"].embed(text)
+            embedding = self.embedding["model"].embed(text)
         elif self.embedding["type"] == "api":
             resp = await self.embedding["client"].embeddings.create(
                 input=text, 
                 model=self.embedding["model"]
             )
-            return resp.data[0].embedding
+            embedding = resp.data[0].embedding
         else:
             return []
+        
+        import numpy as np
+        vec = np.array(embedding)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        return vec.tolist()
     
     async def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         """
-        批量获取嵌入向量
+        批量获取嵌入向量（归一化）
         
         Args:
             texts: 输入文本列表
         
         Returns:
-            嵌入向量列表的列表
+            归一化的嵌入向量列表的列表
         """
+        import numpy as np
+        
         if self.embedding["type"] == "local":
-            return self.embedding["model"].encode(texts).tolist()
+            embeddings = self.embedding["model"].encode(texts)
         elif self.embedding["type"] == "gguf":
-            return [self.embedding["model"].embed(t) for t in texts]
+            model = self.embedding["model"]
+            batch_size = self.embedding.get("batch_size", 8)
+            embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                result = model.create_embedding(batch)
+                embeddings.extend([item["embedding"] for item in result["data"]])
         elif self.embedding["type"] == "api":
-            return await asyncio.gather(*[self._embed(t) for t in texts])
+            embeddings = await asyncio.gather(*[self._embed(t) for t in texts])
+            return embeddings
         else:
             return [[] for _ in texts]
+        
+        results = []
+        for emb in embeddings:
+            vec = np.array(emb)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            results.append(vec.tolist())
+        
+        return results
     
     def _read_tool_index(self) -> Dict:
         """读取工具索引 JSON 文件（支持 JSON5 格式）"""
@@ -750,25 +759,34 @@ class MemorySystem:
         异步同步工具到记忆索引
         
         直接存储完整的 Function Call 定义，不做映射
-        使用全量同步，简单可靠
+        使用全量同步（重建表），避免碎片产生
         
         Args:
             tools: 需要存入记忆索引的工具列表
         """
-        if not tools or self.tools_table is None:
+        if not tools or self.tools_schema is None:
             return
         
-        try:
-            self.tools_table.delete("true")
-        except Exception:
-            pass
+        index_data = self._read_tool_index()
+        index_map = {t["name"]: t for t in index_data.get("tools", [])}
         
         texts = []
         for t in tools:
             func_def = t.get("function", t)
             name = func_def.get("name", "unknown")
             desc = func_def.get("description", "")
-            texts.append(f"{name}: {desc}")
+            
+            index_entry = index_map.get(name, {})
+            keywords = " ".join(index_entry.get("keywords", []))
+            tags = " ".join(index_entry.get("tags", []))
+            
+            text_parts = [f"{name}: {desc}"]
+            if keywords:
+                text_parts.append(keywords)
+            if tags:
+                text_parts.append(tags)
+            
+            texts.append(" ".join(text_parts))
         
         embeddings = await self._embed_batch(texts)
         
@@ -788,7 +806,9 @@ class MemorySystem:
             })
             logger.debug(f"  - 初始化工具到记忆索引: {name} (type={tool_type})")
         
-        self.tools_table.add(entries)
+        self.tools_table = self.db.create_table("tools", schema=self.tools_schema, mode="overwrite")
+        if entries:
+            self.tools_table.add(entries)
         logger.info(f"记忆索引同步完成，共 {len(entries)} 个工具")
     
     async def init_async(self, all_tools: List[Dict]) -> Dict[str, Any]:
@@ -808,34 +828,127 @@ class MemorySystem:
         logger.info(f"异步初始化完成，keep_tools={len(result['keep_tools'])}, memory_tools={len(result['memory_tools'])}")
         return result
     
-    async def search_tools(self, query: str, top_k: int = 5) -> List[Dict]:
+    async def search_tools(self, query: str, top_k: int = 5, distance_threshold: float = 1.0) -> List[Dict]:
         """
         搜索记忆索引中的工具
         
         Args:
             query: 搜索查询
             top_k: 返回数量
+            distance_threshold: L2 距离阈值，距离越小越相似，默认 1.0
         
         Returns:
             匹配的工具列表（完整的 Function Call 定义）
         """
+        logger.info(f"[工具搜索] 开始搜索, query={query[:50]}..., top_k={top_k}, threshold={distance_threshold}")
+        
         if self.tools_table is None:
+            logger.warning("[工具搜索] tools_table 为 None，跳过搜索")
             return []
         
         query_embedding = await self._embed(query)
         if not query_embedding:
+            logger.warning("[工具搜索] query_embedding 为空，跳过搜索")
             return []
         
         try:
-            rows = self.tools_table.search(query_embedding).limit(top_k).to_list()
+            rows = self.tools_table.search(query_embedding).limit(top_k * 2).to_list()
+            logger.info(f"[工具搜索] 查询返回 {len(rows)} 条结果")
+            
             results = []
             for r in rows:
+                distance = r.get("_distance", 999.0)
+                logger.info(f"[工具搜索] 工具: {r['name']}, distance={distance:.4f}")
+                
+                if distance > distance_threshold:
+                    logger.info(f"[工具搜索] 工具 {r['name']} 距离 {distance:.4f} 超过阈值 {distance_threshold}，跳过")
+                    continue
+                
                 tool_def = json5.loads(r.get("tool_definition", "{}"))
                 results.append(tool_def)
                 self._increment_query_count(r["name"])
+                
+                if len(results) >= top_k:
+                    break
+            
+            logger.info(f"[工具搜索] 完成，返回 {len(results)} 个工具")
             return results
         except Exception as e:
             logger.error(f"搜索工具失败: {e}")
+            return []
+    
+    async def search_tools_batch(
+        self, 
+        queries: List[str], 
+        top_k: int = 5, 
+        distance_threshold: float = 1.0
+    ) -> List[Dict]:
+        """
+        批量搜索记忆索引中的工具
+        
+        使用 lancedb 的批量查询功能，一次处理多个查询，提高效率。
+        结果自动去重（基于工具名称）。
+        
+        Args:
+            queries: 搜索查询列表
+            top_k: 每个查询返回数量
+            distance_threshold: L2 距离阈值，距离越小越相似，默认 1.0
+        
+        Returns:
+            去重后的工具列表（完整的 Function Call 定义）
+        """
+        if not queries:
+            return []
+        
+        if len(queries) == 1:
+            return await self.search_tools(queries[0], top_k, distance_threshold)
+        
+        logger.info(f"[批量工具搜索] 开始批量搜索, queries={len(queries)}, top_k={top_k}, threshold={distance_threshold}")
+        
+        if self.tools_table is None:
+            logger.warning("[批量工具搜索] tools_table 为 None，跳过搜索")
+            return []
+        
+        query_embeddings = await self._embed_batch(queries)
+        if not any(query_embeddings):
+            logger.warning("[批量工具搜索] query_embeddings 为空，跳过搜索")
+            return []
+        
+        try:
+            valid_embeddings = [emb for emb in query_embeddings if emb]
+            if not valid_embeddings:
+                return []
+            
+            rows = self.tools_table.search(valid_embeddings).limit(top_k * 2).to_list()
+            logger.info(f"[批量工具搜索] 查询返回 {len(rows)} 条结果")
+            
+            seen_names = set()
+            results = []
+            query_count_incremented = set()
+            
+            for r in rows:
+                distance = r.get("_distance", 999.0)
+                tool_name = r.get("name", "")
+                
+                if distance > distance_threshold:
+                    logger.debug(f"[批量工具搜索] 工具 {tool_name} 距离 {distance:.4f} 超过阈值 {distance_threshold}，跳过")
+                    continue
+                
+                if tool_name in seen_names:
+                    continue
+                
+                seen_names.add(tool_name)
+                tool_def = json5.loads(r.get("tool_definition", "{}"))
+                results.append(tool_def)
+                
+                if tool_name not in query_count_incremented:
+                    self._increment_query_count(tool_name)
+                    query_count_incremented.add(tool_name)
+            
+            logger.info(f"[批量工具搜索] 完成，返回 {len(results)} 个去重工具")
+            return results
+        except Exception as e:
+            logger.error(f"批量搜索工具失败: {e}")
             return []
     
     def _increment_query_count(self, tool_name: str):
@@ -860,16 +973,21 @@ class MemorySystem:
         更新热点工具状态
         
         逻辑：
-        1. 获取所有达到 hot_threshold 的工具
+        1. 获取所有达到 hot_threshold 的工具（排除核心工具）
         2. 按查询次数降序排序
         3. 取前 hot_tool_limit 个转为常驻（add_to_memory=False）
+        
+        注意：核心工具（category=core）不参与热点调整，保持用户配置
         """
         data = self._read_tool_index()
         tools = data.get("tools", [])
         
+        core_tool_names = {t["name"] for t in tools if t.get("category") == "core"}
+        
         hot_candidates = [
             t for t in tools
             if t.get("query_count", 0) >= self.hot_threshold
+            and t.get("category") != "core"
         ]
         
         hot_candidates.sort(key=lambda x: x.get("query_count", 0), reverse=True)
@@ -878,6 +996,9 @@ class MemorySystem:
         
         changed = False
         for tool in tools:
+            if tool["name"] in core_tool_names:
+                continue
+            
             if tool["name"] in hot_tool_names:
                 if tool.get("add_to_memory", True):
                     tool["add_to_memory"] = False
@@ -971,11 +1092,107 @@ class MemorySystem:
         logger.info(f"记忆已保存: {memory_id}")
         return memory_id
     
+    def _add_memories_to_db(self, entries: List[Dict]) -> bool:
+        """
+        批量写入记忆到向量数据库（内部方法）
+        
+        Args:
+            entries: 已包含 embedding 的记忆条目列表，每个条目包含：
+                - id: 记忆 ID
+                - content: 记忆内容
+                - embedding: 嵌入向量
+                - memory_type: 记忆类型
+                - importance: 重要性评分
+                - tags: 标签列表
+                - created_at: 创建时间
+        
+        Returns:
+            是否写入成功
+        """
+        if not entries or self.memories_table is None:
+            return False
+        
+        try:
+            self.memories_table.add(entries)
+            logger.info(f"批量写入向量数据库: {len(entries)} 条记忆")
+            return True
+        except Exception as e:
+            logger.error(f"批量写入向量数据库失败: {e}")
+            return False
+    
+    async def save_batch(
+        self,
+        items: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        批量保存记忆（高性能版本）
+        
+        相比逐条调用 save()，批量插入具有以下优势：
+        - 批量获取嵌入向量，减少 API 调用次数
+        - 批量写入向量数据库，减少 I/O 操作
+        - 一次性更新 JSON 索引文件，避免重复读写
+        
+        Args:
+            items: 记忆条目列表，每个条目包含：
+                - content: 记忆内容（必需）
+                - memory_type: 记忆类型（默认 conversation）
+                - importance: 重要性评分（默认 5）
+                - tags: 标签列表（默认 []）
+                - created_at: 创建时间（可选，默认当前时间）
+        
+        Returns:
+            记忆 ID 列表
+        """
+        if not items:
+            return []
+        
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        memory_ids = [str(uuid.uuid4())[:8] for _ in items]
+        contents = [item.get("content", "") for item in items]
+        
+        if self.memories_table is not None:
+            embeddings = await self._embed_batch(contents)
+            
+            entries = []
+            for i, item in enumerate(items):
+                embedding = embeddings[i] if i < len(embeddings) else []
+                if embedding:
+                    entries.append({
+                        "id": memory_ids[i],
+                        "content": item.get("content", ""),
+                        "embedding": embedding,
+                        "memory_type": item.get("memory_type", "conversation"),
+                        "importance": item.get("importance", 5),
+                        "tags": item.get("tags", []),
+                        "created_at": item.get("created_at", now)
+                    })
+            
+            self._add_memories_to_db(entries)
+        
+        data = self._read_memory_index()
+        for i, item in enumerate(items):
+            data["memories"].append({
+                "id": memory_ids[i],
+                "content": item.get("content", ""),
+                "memory_type": item.get("memory_type", "conversation"),
+                "importance": item.get("importance", 5),
+                "tags": item.get("tags", []),
+                "created_at": item.get("created_at", now)
+            })
+        self._write_memory_index(data)
+        
+        logger.info(f"批量保存记忆完成: {len(memory_ids)} 条")
+        return memory_ids
+    
     async def search(
         self,
         query: str,
         search_type: str = "all",
-        top_k: int = 10
+        top_k: int = 10,
+        tags: List[str] = None,
+        category: str = None,
+        distance_threshold: float = 1.0
     ) -> Dict[str, List[Dict]]:
         """
         统一搜索
@@ -984,6 +1201,9 @@ class MemorySystem:
             query: 搜索查询
             search_type: 搜索范围（all/memory/tool）
             top_k: 返回数量
+            tags: 标签过滤（仅工具）
+            category: 分类过滤（仅工具）
+            distance_threshold: L2 距离阈值，距离越小越相似，默认 1.0
         
         Returns:
             {"memories": [...], "tools": [...]}
@@ -996,29 +1216,48 @@ class MemorySystem:
         
         if search_type in ["all", "memory"] and self.memories_table is not None:
             try:
-                rows = self.memories_table.search(query_embedding).limit(top_k).to_list()
-                results["memories"] = [
-                    {
+                rows = self.memories_table.search(query_embedding).limit(top_k * 2).to_list()
+                for r in rows:
+                    distance = r.get("_distance", 999.0)
+                    if distance > distance_threshold:
+                        continue
+                    results["memories"].append({
                         "id": r["id"],
                         "content": r["content"],
                         "type": r.get("memory_type", "conversation"),
                         "importance": r.get("importance", 5),
                         "tags": r.get("tags", []),
-                        "created_at": r.get("created_at", "")
-                    }
-                    for r in rows
-                ]
+                        "created_at": r.get("created_at", ""),
+                        "_distance": distance
+                    })
+                    if len(results["memories"]) >= top_k:
+                        break
             except Exception:
                 pass
         
         if search_type in ["all", "tool"] and self.tools_table is not None:
             try:
-                rows = self.tools_table.search(query_embedding).limit(top_k).to_list()
-                results["tools"] = []
+                rows = self.tools_table.search(query_embedding).limit(top_k * 2).to_list()
                 for r in rows:
+                    distance = r.get("_distance", 999.0)
+                    if distance > distance_threshold:
+                        continue
+                    
+                    tool_tags = r.get("tags", [])
+                    tool_category = r.get("category", "")
+                    
+                    if tags and not any(t in tool_tags for t in tags):
+                        continue
+                    if category and tool_category != category:
+                        continue
+                    
                     tool_def = json5.loads(r.get("tool_definition", "{}"))
+                    tool_def["_distance"] = distance
                     results["tools"].append(tool_def)
                     self._increment_query_count(r["name"])
+                    
+                    if len(results["tools"]) >= top_k:
+                        break
             except Exception:
                 pass
         
@@ -1044,6 +1283,72 @@ class MemorySystem:
         except Exception as e:
             logger.error(f"删除记忆失败: {e}")
             return False
+    
+    async def list_memories(
+        self,
+        top_k: int = 10,
+        full: bool = True,
+        order: str = "desc",
+        max_content_length: int = 200
+    ) -> Dict[str, Any]:
+        """
+        列出记忆（不需要搜索关键词）
+        
+        Args:
+            top_k: 返回数量，默认 10
+            full: 是否返回完整内容，默认 True
+            order: 排序方式，desc(最近的在前) / asc(最早的在前)，默认 desc
+            max_content_length: 内容截断长度（仅当 full=False 时生效）
+        
+        Returns:
+            {"total_count": N, "returned_count": M, "memories": [...]}
+        """
+        if self.memories_table is None:
+            return {"total_count": 0, "returned_count": 0, "memories": []}
+        
+        try:
+            df = self.memories_table.to_pandas()
+            columns_to_keep = ["id", "content", "memory_type", "importance", "tags", "created_at"]
+            df_filtered = df[[col for col in columns_to_keep if col in df.columns]]
+            all_rows = df_filtered.to_dict('records')
+            total_count = len(all_rows)
+            
+            reverse_order = (order == "desc")
+            sorted_rows = sorted(
+                all_rows,
+                key=lambda x: x.get("created_at", ""),
+                reverse=reverse_order
+            )
+            
+            limited_rows = sorted_rows[:top_k]
+            
+            memories = []
+            for r in limited_rows:
+                content = r.get("content", "")
+                if not full and len(content) > max_content_length:
+                    content = content[:max_content_length] + "..."
+                
+                tags = r.get("tags", [])
+                if hasattr(tags, 'tolist'):
+                    tags = tags.tolist()
+                
+                memories.append({
+                    "id": r.get("id", ""),
+                    "content": content,
+                    "type": r.get("memory_type", "conversation"),
+                    "importance": int(r.get("importance", 5)),
+                    "tags": tags,
+                    "created_at": r.get("created_at", "")
+                })
+            
+            return {
+                "total_count": total_count,
+                "returned_count": len(memories),
+                "memories": memories
+            }
+        except Exception as e:
+            logger.error(f"列出记忆失败: {e}")
+            return {"total_count": 0, "returned_count": 0, "memories": []}
     
     async def register_tool(
         self,
@@ -1148,6 +1453,68 @@ class MemorySystem:
             if t.get("enabled", True) and t.get("add_to_memory", True)
         ]
     
+    def compact(self, table_name: str = "all") -> bool:
+        """
+        压缩数据库表，减少碎片
+        
+        LanceDB 的 delete 操作不会立即释放磁盘空间，需要调用 compact。
+        建议在大量删除操作后调用此方法。
+        
+        Args:
+            table_name: 要压缩的表名（memories/tools/all），默认 all
+        
+        Returns:
+            是否压缩成功
+        """
+        if self.db is None:
+            logger.warning("数据库未初始化，无法压缩")
+            return False
+        
+        try:
+            tables_to_compact = []
+            if table_name in ["all", "memories"] and self.memories_table is not None:
+                tables_to_compact.append(("memories", self.memories_table))
+            if table_name in ["all", "tools"] and self.tools_table is not None:
+                tables_to_compact.append(("tools", self.tools_table))
+            
+            for name, table in tables_to_compact:
+                if hasattr(table, 'compact_files'):
+                    table.compact_files()
+                    logger.info(f"表 {name} 压缩完成")
+                else:
+                    logger.info(f"表 {name} 不支持压缩（需要安装 pylance）")
+            
+            return True
+        except Exception as e:
+            logger.error(f"压缩数据库失败: {e}")
+            return False
+    
     def is_enabled(self) -> bool:
         """检查记忆系统是否启用"""
         return self.config.get("enabled", True)
+    
+    def get_all_ability_tags(self) -> List[str]:
+        """
+        获取所有能力标签（用于任务拆解阶段）
+        
+        从 tool_index.json 中提取所有 tags 字段，去重后返回。
+        能力标签用于任务拆解阶段标注每个步骤所需的能力需求，
+        执行阶段会根据能力标签通过 discover 工具动态匹配具体工具。
+        
+        Returns:
+            能力标签列表，如 ["天气查询", "读取文件", "写入文件", ...]
+        
+        Example:
+            >>> memory_system.get_all_ability_tags()
+            ['天气', '查询', '实时信息', '日历', '计划', '技能', '安装', ...]
+        """
+        all_tags = set()
+        data = self._read_tool_index()
+        
+        for tool in data.get("tools", []):
+            if tool.get("enabled", True):
+                tags = tool.get("tags", [])
+                all_tags.update(tags)
+                
+        logger.info(f"get_all_ability_tags {len(all_tags)} 个能力标签: {all_tags}")
+        return sorted(list(all_tags))

@@ -10,24 +10,98 @@
 该模块定义了核心 Agent 类，负责协调对话、工具调用和技能执行。
 """
 import json
+import re
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 from colorama import Fore, Style
 from loguru import logger
 
 from agent.config.configloader import GLOBAL_CONFIG
 from agent.core.conversation import ConversationManager
+from agent.core.agent_initializer import AgentInitializer
+from agent.core.token_counter import TokenCounter
 from agent.fileSystem.filesystem import FileSystemTool
 from agent.provider.llmclient import LLMClient
 from agent.skill.skill_loader import SkillLoader
 from agent.memory import MemorySystem
-from agent.tool.browsertool import BrowserTool
 from agent.tool.shelltool import ShellTool
 from agent.tool.tooladapter import ToolAdapter
+from agent.utils import words_utils
+
 
 if TYPE_CHECKING:
     from agent.config.agent_config import AgentConfig
+
+
+def _format_content_for_print(content, max_length: int = 100) -> str:
+    """格式化消息内容，截断 Base64 图片数据。"""
+    if isinstance(content, str):
+        return content[:max_length] + ('...' if len(content) > max_length else '')
+    
+    if not isinstance(content, list):
+        return str(content)[:max_length]
+    
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            parts.append(str(item)[:max_length])
+            continue
+        item_type = item.get('type')
+        if item_type == 'text':
+            text = item.get('text', '')[:max_length]
+            parts.append(text + ('...' if len(item.get('text', '')) > max_length else ''))
+        elif item_type == 'image_url':
+            url = item.get('image_url', {}).get('url', '')
+            if url.startswith('data:'):
+                mime = url[5:url.find(';base64,')] if ';base64,' in url else 'unknown'
+                parts.append(f"[图片:{mime},{len(url)}字符]")
+            else:
+                parts.append(f"[图片URL:{url[:30]}...]")
+        else:
+            parts.append(str(item)[:max_length])
+    return ' '.join(parts)
+
+
+def _extract_reasoning_content(message: Any) -> Optional[str]:
+    """
+    从大模型消息中提取推理/思考内容。
+    
+    支持多种字段名:
+        - reasoning_content: 通义千问等模型
+        - thinking_content: 某些模型
+        - thoughts: 某些模型
+        - thinking: 块状思考内容
+    
+    Args:
+        message: 大模型返回的消息对象
+    
+    Returns:
+        Optional[str]: 提取的思考内容，无则返回 None
+    """
+    reasoning_content = getattr(message, 'reasoning_content', None)
+    if reasoning_content:
+        return reasoning_content
+    
+    reasoning_content = getattr(message, 'thinking_content', None)
+    if reasoning_content:
+        return reasoning_content
+    
+    reasoning_content = getattr(message, 'thoughts', None)
+    if reasoning_content:
+        return reasoning_content
+    
+    thinking_blocks = getattr(message, 'thinking', None)
+    if thinking_blocks and hasattr(thinking_blocks, '__iter__'):
+        try:
+            return '\n'.join([
+                block.text if hasattr(block, 'text') else str(block)
+                for block in thinking_blocks
+            ])
+        except Exception:
+            pass
+    
+    return None
 
 
 def print_conversation_history(messages: list, max_content_length: int = 100, print_last_only: bool = False):
@@ -38,6 +112,7 @@ def print_conversation_history(messages: list, max_content_length: int = 100, pr
         - 格式化打印对话消息列表
         - 支持不同角色的颜色区分
         - 支持只打印最后一条消息
+        - 自动截断 Base64 图片数据
 
     参数:
         messages: 对话消息列表
@@ -59,20 +134,22 @@ def print_conversation_history(messages: list, max_content_length: int = 100, pr
         content = msg.get('content', '')
         tool_calls = msg.get('tool_calls', None)
         tool_call_id = msg.get('tool_call_id', None)
+        formatted_content = _format_content_for_print(content, max_content_length)
+        
         if role == 'system':
-            logger.debug(f"{Fore.MAGENTA}[历史 {idx}] system: {content[:max_content_length]}{Style.RESET_ALL}")
+            logger.debug(f"{Fore.MAGENTA}[历史 {idx}] system: {formatted_content}{Style.RESET_ALL}")
         elif role == 'user':
-            logger.debug(f"{Fore.YELLOW}[历史 {idx}] user: {content[:max_content_length]}{Style.RESET_ALL}")
+            logger.debug(f"{Fore.YELLOW}[历史 {idx}] user: {formatted_content}{Style.RESET_ALL}")
         elif role == 'assistant':
             if tool_calls:
                 tool_names = [tc.get('function', {}).get('name', 'unknown') for tc in tool_calls]
                 logger.debug(f"{Fore.GREEN}[历史 {idx}] assistant(tool): {tool_names}{Style.RESET_ALL}")
             else:
-                logger.debug(f"{Fore.GREEN}[历史 {idx}] assistant: {content[:max_content_length]}{Style.RESET_ALL}")
+                logger.debug(f"{Fore.GREEN}[历史 {idx}] assistant: {formatted_content}{Style.RESET_ALL}")
         elif role == 'tool':
-            logger.debug(f"{Fore.BLUE}[历史 {idx}] tool({tool_call_id}): {content[:max_content_length]}{Style.RESET_ALL}")
+            logger.debug(f"{Fore.BLUE}[历史 {idx}] tool({tool_call_id}): {formatted_content}{Style.RESET_ALL}")
         else:
-            logger.debug(f"{Fore.WHITE}[历史 {idx}] {role}: {content[:max_content_length]}{Style.RESET_ALL}")
+            logger.debug(f"{Fore.WHITE}[历史 {idx}] {role}: {formatted_content}{Style.RESET_ALL}")
 
 
 class Agent:
@@ -86,24 +163,26 @@ class Agent:
         - 支持流式和非流式响应
         - 支持技能自动检测和调用
         - 支持多Agent架构和子代理委托
+        - 支持任务拆解和断点续跑
     
     核心方法:
         - chat: 非流式对话（用于CLI和API）
         - chat_stream: 流式对话（用于旧API兼容）
         - reload: 重载所有组件配置
     
-    技能调用流程:
-        1. 用户输入 → _detect_skill_from_input 检测技能
-        2. 准备工具清单 → _prepare_tools_for_skill 优先显示检测到的技能
-        3. 大模型选择 skill_xxx → ToolAdapter.call_tool 调用
-        4. SkillLoader.execute 返回技能说明（非直接执行）
-        5. 大模型根据说明选择具体工具 → 多轮工具调用 → 完成
-    
     配置项:
         - max_tool_calls: 最大工具调用次数，默认10次
         - agent_config: Agent配置对象，支持多Agent架构
         - delegation_depth: 当前委托深度，用于子代理调用
     """
+    
+    mcp_manager: Any
+    mcp_tool_adapter: Any
+    browser_tool: Any
+    memory_system: Any
+    task_decomposer: Any
+    task_tree_manager: Any
+    heartbeat_manager: Any
     
     def __init__(
         self, 
@@ -139,15 +218,10 @@ class Agent:
         if agent_config and agent_config.system_prompt:
             self.conversation.custom_system_prompt = agent_config.system_prompt
         
-        skill_patterns = agent_config.skills if agent_config else None
-        skill_list_str = self.skill_loader.get_skill_list_info(skill_patterns)
-        self.conversation.inject_skill_list(skill_list_str)
-        
         if agent_config and agent_config.model:
             self.llm_client = LLMClient(default_model=agent_config.model)
-            if agent_config.llm_preset:
-                llm_params = agent_config.get_llm_params()
-                self.llm_client.apply_preset(llm_params)
+            llm_params = agent_config.get_llm_params()
+            self.llm_client.apply_preset(llm_params)
         else:
             self.llm_client = LLMClient()
         
@@ -163,218 +237,10 @@ class Agent:
         self._auto_save = GLOBAL_CONFIG.get("session.auto_save", True)
         logger.info(f"{Fore.CYAN}初始化 Agent: {self.agent_id}, 最大工具调用次数: {self.max_tool_calls}{Style.RESET_ALL}")
         
-        self._init_mcp()
-        self._init_browser()
-        self._init_memory()
-
-    def _init_mcp(self):
-        """
-        初始化 MCP (Model Context Protocol) 模块。
-        
-        功能说明:
-            - 检查是否启用 MCP 功能
-            - 创建 MCPManager 并加载服务器配置
-            - 连接所有启用的 MCP Server
-            - 将 MCP 工具注册到 ToolAdapter
-        
-        配置项:
-            - enable_mcp: 是否启用 MCP 功能，默认 True
-        """
-        enable_mcp = GLOBAL_CONFIG.get("enable_mcp", True)
-        
-        if not enable_mcp:
-            logger.info(f"{Fore.CYAN}[MCP] MCP 功能已禁用{Style.RESET_ALL}")
-            self.mcp_manager = None
-            self.mcp_tool_adapter = None
-            return
-        
-        try:
-            from agent.mcp import MCPManager, MCPToolAdapter
-            
-            self.mcp_manager = MCPManager()
-            server_count = self.mcp_manager.load_servers()
-            
-            if server_count > 0:
-                results = self.mcp_manager.connect_all_sync()
-                connected_count = sum(1 for v in results.values() if v)
-                logger.info(f"{Fore.CYAN}[MCP] 已连接 {connected_count}/{server_count} 个 MCP 服务器{Style.RESET_ALL}")
-                
-                self.mcp_tool_adapter = MCPToolAdapter(self.mcp_manager)
-                registered_count = self.mcp_tool_adapter.register_to_tool_adapter(self.tool_adapter)
-                logger.info(f"{Fore.CYAN}[MCP] 已注册 {registered_count} 个 MCP 工具{Style.RESET_ALL}")
-            else:
-                logger.info(f"{Fore.CYAN}[MCP] 未配置任何 MCP 服务器{Style.RESET_ALL}")
-                self.mcp_tool_adapter = None
-                
-        except ImportError as e:
-            logger.warning(f"{Fore.YELLOW}[MCP] MCP SDK 未安装，跳过 MCP 初始化: {e}{Style.RESET_ALL}")
-            logger.warning(f"{Fore.YELLOW}[MCP] 请运行: pip install mcp{Style.RESET_ALL}")
-            self.mcp_manager = None
-            self.mcp_tool_adapter = None
-        except Exception as e:
-            logger.error(f"{Fore.RED}[MCP] MCP 初始化失败: {e}{Style.RESET_ALL}")
-            self.mcp_manager = None
-            self.mcp_tool_adapter = None
-    
-    def _init_browser(self):
-        """
-        初始化浏览器工具模块（参考 _init_mcp 实现）
-        
-        功能说明:
-            - 检查是否启用浏览器功能
-            - 创建 BrowserTool 实例
-            - 将浏览器工具注册到 ToolAdapter
-        """
-        enable_browser = GLOBAL_CONFIG.get("enable_browser", True)
-        
-        if not enable_browser:
-            logger.info(f"{Fore.CYAN}[Browser] 浏览器功能已禁用{Style.RESET_ALL}")
-            self.browser_tool = None
-            return
-        
-        try:
-            self.browser_tool = BrowserTool.get_instance()
-            registered_count = self.browser_tool.register_to_tool_adapter(self.tool_adapter)
-            logger.info(f"{Fore.CYAN}[Browser] Registered {registered_count} browser tools{Style.RESET_ALL}")
-            
-        except ImportError as e:
-            logger.warning(f"{Fore.YELLOW}[Browser] browser-use 未安装: {e}{Style.RESET_ALL}")
-            logger.warning(f"{Fore.YELLOW}[Browser] 请运行: pip install browser-use playwright && playwright install chromium{Style.RESET_ALL}")
-            self.browser_tool = None
-        except Exception as e:
-            logger.error(f"{Fore.RED}[Browser] 浏览器工具初始化失败: {e}{Style.RESET_ALL}")
-            self.browser_tool = None
-
-    def _init_memory(self):
-        """
-        初始化记忆系统模块
-        
-        功能说明:
-            - 检查是否启用记忆系统功能
-            - 创建 MemorySystem 实例
-            - 将记忆系统工具注册到 ToolAdapter
-            - 处理工具索引并同步到数据库
-            - 从内存中移除已加入记忆索引的工具
-        
-        配置项:
-            - memory.enabled: 是否启用记忆系统
-            - memory.db_path: 向量数据库路径
-            - memory.index_path: 索引文件路径
-        """
-        memory_config = GLOBAL_CONFIG.get("memory", {})
-        enabled = memory_config.get("enabled", False)
-        
-        if not enabled:
-            logger.info(f"{Fore.CYAN}[Memory] 记忆系统已禁用{Style.RESET_ALL}")
-            self.memory_system = None
-            return
-        
-        try:
-            self.memory_system = MemorySystem(memory_config)
-            self.tool_adapter.memory_system = self.memory_system
-            
-            config = self.tool_adapter._load_tools_config()
-            for tool_def in config.get("memory_tools", []):
-                tool_name = tool_def["name"]
-                tool_def["func"] = self.tool_adapter._get_memory_tool_func(tool_name)
-                self.tool_adapter.tools[tool_name] = tool_def
-            
-            logger.info(f"{Fore.CYAN}[Memory] 记忆系统工具注册完成，共 {len(config.get('memory_tools', []))} 个{Style.RESET_ALL}")
-            
-            all_tools = self.tool_adapter.list_tools()
-            try:
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(self.memory_system.init_async(all_tools))
-                
-                memory_tool_names = set()
-                for tool in result.get("memory_tools", []):
-                    func_def = tool.get("function", tool)
-                    name = func_def.get("name")
-                    if name:
-                        memory_tool_names.add(name)
-                
-                for name in memory_tool_names:
-                    if name in self.tool_adapter.tools:
-                        del self.tool_adapter.tools[name]
-                        logger.debug(f"  - 从内存移除工具（已加入记忆索引）: {name}")
-                
-                if memory_tool_names:
-                    logger.info(f"{Fore.CYAN}[Memory] 已将 {len(memory_tool_names)} 个工具移入记忆索引，当前常驻工具 {len(self.tool_adapter.tools)} 个{Style.RESET_ALL}")
-                    
-                    self._update_injected_skill_list(memory_tool_names)
-                
-                loop.close()
-            except RuntimeError:
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(self._run_memory_init_async, all_tools)
-                    future.result()
-            
-        except ImportError as e:
-            logger.warning(f"{Fore.YELLOW}[Memory] 记忆系统依赖未安装: {e}{Style.RESET_ALL}")
-            self.memory_system = None
-        except Exception as e:
-            logger.error(f"{Fore.RED}[Memory] 记忆系统初始化失败: {e}{Style.RESET_ALL}")
-            self.memory_system = None
-
-    def _run_memory_init_async(self, all_tools):
-        """在独立线程中运行异步初始化"""
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.memory_system.init_async(all_tools))
-        loop.close()
-
-    def _update_injected_skill_list(self, memory_tool_names: set):
-        """
-        更新注入的技能列表，移除已加入记忆索引的技能
-        
-        Args:
-            memory_tool_names: 已加入记忆索引的工具名称集合
-        """
-        try:
-            current_prompt = self.conversation.system_prompt
-            lines_to_remove = []
-            
-            for tool_name in memory_tool_names:
-                if tool_name.startswith("skill_"):
-                    skill_name = tool_name[6:]
-                    lines_to_remove.append(f"- name: {skill_name}")
-            
-            if not lines_to_remove:
-                return
-            
-            lines = current_prompt.split('\n')
-            new_lines = []
-            skip_next = False
-            
-            for i, line in enumerate(lines):
-                if skip_next:
-                    skip_next = False
-                    continue
-                    
-                should_remove = False
-                for remove_prefix in lines_to_remove:
-                    if line.strip().startswith(remove_prefix):
-                        should_remove = True
-                        break
-                
-                if should_remove:
-                    if i + 1 < len(lines) and lines[i + 1].strip().startswith("description:"):
-                        skip_next = True
-                    continue
-                    
-                new_lines.append(line)
-            
-            self.conversation._base_system_prompt = '\n'.join(new_lines)
-            self.conversation.system_prompt = self.conversation._base_system_prompt
-            
-            logger.info(f"{Fore.CYAN}[Memory] 已从 system prompt 移除 {len(lines_to_remove)} 个记忆索引技能{Style.RESET_ALL}")
-            
-        except Exception as e:
-            logger.warning(f"{Fore.YELLOW}[Memory] 更新技能列表失败: {e}{Style.RESET_ALL}")
+        AgentInitializer.init_mcp(self)
+        AgentInitializer.init_browser(self)
+        AgentInitializer.init_memory(self)
+        AgentInitializer.init_task_decomposition(self)
 
     def reload(self):
         """
@@ -407,6 +273,11 @@ class Agent:
         
         self.llm_client.reload_config()
         
+        if self.agent_config:
+            llm_params = self.agent_config.get_llm_params()
+            self.llm_client.apply_preset(llm_params)
+            logger.info(f"{Fore.CYAN}[Reload] LLM 参数已更新: temperature={llm_params.get('temperature')}, max_tokens={llm_params.get('max_tokens')}, timeout={llm_params.get('timeout')}{Style.RESET_ALL}")
+        
         if current_model != self.llm_client.current_model_alias:
             switch_result = self.llm_client.switch_model(current_model)
             logger.info(f"{Fore.CYAN}[Reload] 模型已切换: {current_model}{Style.RESET_ALL}")
@@ -422,102 +293,175 @@ class Agent:
         )
         self.conversation.reload_prompt()
         
-        skill_patterns = self.agent_config.skills if self.agent_config else None
-        skill_list_str = self.skill_loader.get_skill_list_info(skill_patterns)
-        self.conversation.inject_skill_list(skill_list_str)
-        
         if self.mcp_manager:
             try:
                 self.mcp_manager.disconnect_all_sync()
             except Exception as e:
                 logger.debug(f"[Reload] MCP 断开连接时出错（可忽略）: {e}")
         
-        self._init_mcp()
-        self._init_browser()
-        self._init_memory()
+        AgentInitializer.init_mcp(self)
+        AgentInitializer.init_browser(self)
+        AgentInitializer.init_memory(self)
         
         logger.info(f"{Fore.GREEN}✅ 所有组件已重载{Style.RESET_ALL}")
 
-    def _detect_skill_from_input(self, user_input: str) -> Optional[str]:
+    def _clear_skill_state(self):
         """
-        从用户输入中检测是否指定了技能。
+        清理技能状态（注入文档、重复计数等）
+        """
+        if self.conversation.has_injected_skill():
+            self.conversation.clear_injected_document()
+        self._last_skill_call = None
+        self._last_skill_repeat_count = 0
+    
+    def _get_core_tool_names(self) -> List[str]:
+        """
+        获取核心工具名称列表（始终加载）
         
-        检测逻辑:
-            1. 精确匹配：检查用户输入是否包含技能名（支持多种变体）
-            2. 关键词匹配：如果包含"skill"/"技能"/"使用"/"调用"等关键词，
-               则检查输入中是否包含技能的某个部分
+        从 tool_index.json 中读取 category="core" 的工具。
+        如果 memory_system 未初始化，则使用默认的核心工具列表。
+        
+        Returns:
+            核心工具名称列表
+        """
+        default_core_tools = [
+        ]
+        
+        if not self.memory_system:
+            return default_core_tools
+        
+        try:
+            data = self.memory_system._read_tool_index()
+            tools = data.get("tools", [])
+            core_names = [t["name"] for t in tools if t.get("category") == "core" and t.get("enabled", True)]
+            
+            if core_names:
+                return core_names
+            return default_core_tools
+        except Exception as e:
+            logger.warning(f"读取核心工具列表失败，使用默认值: {e}")
+            return default_core_tools
+    
+    def _get_core_tools(self) -> List[Dict[str, Any]]:
+        """
+        获取核心工具列表（始终加载）
+        
+        Returns:
+            核心工具定义列表
+        """
+        core_names = set(self._get_core_tool_names())
+        core_tools = []
+        
+        for name in core_names:
+            if name in self.tool_adapter.tools:
+                tool_info = self.tool_adapter.tools[name]
+                core_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": tool_info["description"],
+                        "parameters": tool_info["parameters"]
+                    }
+                })
+        
+        return core_tools
+    
+    def _preprocess_user_input(self, user_input: Union[str, List[str]]) -> List[str]:
+        """
+        预处理用户输入，预测可能需要的工具
+        
+        支持单个查询和批量查询：
+        - 字符串输入：自动分句后批量查询
+        - 列表输入：直接批量查询
+        
+        流程：
+        1. 从记忆索引搜索相关工具
+        2. 自动注册到工具列表
+        3. 返回注册的工具名称
         
         Args:
-            user_input: 用户输入文本
-            
+            user_input: 用户输入（字符串或字符串列表）
+        
         Returns:
-            检测到的技能名称，未检测到返回 None
+            注册的工具名称列表（去重）
         """
-        if not user_input:
-            return None
+        logger.info(f"[预处理] 开始预处理, memory_system={self.memory_system is not None}")
+        
+        if not self.memory_system:
+            logger.warning("[预处理] memory_system 为 None，跳过预测")
+            return []
+        
+        memory_config = GLOBAL_CONFIG.get("memory", {})
+        tool_search_config = memory_config.get("tool_search", {})
+        
+        top_k = tool_search_config.get("top_k", 3)
+        distance_threshold = tool_search_config.get("distance_threshold", 1.0)
+        
+        logger.info(f"[预处理] 配置: top_k={top_k}, distance_threshold={distance_threshold}")
+        
+        try:
+            if isinstance(user_input, list):
+                queries = user_input
+                if not queries:
+                    return []
+                logger.info(f"[预处理] 列表输入模式，查询数量: {len(queries)}")
+            else:
+                queries = words_utils.fast_chinese_task_split(user_input)
+                logger.info(f"[预处理] 字符串分句结果: {queries}")
+                if not queries:
+                    return []
             
-        user_input_lower = user_input.lower()
-        
-        for skill_name in self.skill_loader.skills.keys():
-            skill_variants = [
-                skill_name.lower(),
-                skill_name.replace("-", " ").lower(),
-                skill_name.replace("_", " ").lower(),
-                skill_name.replace("-", "").lower(),
-                skill_name.replace("_", "").lower(),
-            ]
-            for variant in skill_variants:
-                if variant in user_input_lower:
-                    return skill_name
-        
-        skill_keywords = ["skill", "技能", "使用", "调用"]
-        has_skill_keyword = any(kw in user_input_lower for kw in skill_keywords)
-        
-        if has_skill_keyword:
-            for skill_name in self.skill_loader.skills.keys():
-                skill_parts = skill_name.replace("-", " ").replace("_", " ").split()
-                for part in skill_parts:
-                    if len(part) > 2 and part.lower() in user_input_lower:
-                        return skill_name
-        
-        return None
-
-    def _prepare_tools_for_skill(self, skill_name: Optional[str]) -> List[Dict[str, Any]]:
+            tools = self.tool_adapter._run_async(
+                self.memory_system.search_tools_batch(queries, top_k=top_k, distance_threshold=distance_threshold)
+            )
+            
+            logger.debug(f"[预处理] 搜索返回 {len(tools)} 个工具")
+            
+            registered = []
+            seen_names = set()
+            for tool_def in tools:
+                func_def = tool_def.get("function", tool_def)
+                tool_name = func_def.get("name", "")
+                if tool_name and tool_name not in seen_names:
+                    if self.tool_adapter._register_skill_tool(tool_name, func_def):
+                        registered.append(tool_name)
+                        seen_names.add(tool_name)
+                        logger.info(f"[预处理] 预测加载工具: {tool_name}")
+            
+            return registered
+        except Exception as e:
+            logger.warning(f"[预处理] 工具预测失败: {e}")
+            return []
+    
+    def _prepare_tools_with_preprocess(self, user_input: str) -> List[Dict[str, Any]]:
         """
-        准备工具清单，如果指定了技能则将该技能工具置顶。
+        准备工具列表（核心工具 + 预测工具）
         
         Args:
-            skill_name: 技能名称，为None时返回所有工具
-            
+            user_input: 用户输入
+        
         Returns:
-            工具定义列表，格式符合OpenAI Function Calling规范
+            工具定义列表
         """
-        tools = self.tool_adapter.list_tools()
+        core_tools = self._get_core_tools()
+        core_names = {t["function"]["name"] for t in core_tools}
         
-        if self.agent_config:
-            allowed_patterns = self.agent_config.tools
-            tools = self._filter_tools(tools, allowed_patterns)
-            
-            skill_patterns = self.agent_config.skills
-            tools = self._filter_skills(tools, skill_patterns)
+        predicted_names = self._preprocess_user_input(user_input)
         
-        if not skill_name:
-            skill_name = self._detect_skill_from_input(None)
+        predicted_tools = []
+        for name in predicted_names:
+            if name not in core_names and name in self.tool_adapter.tools:
+                tool_info = self.tool_adapter.tools[name]
+                predicted_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": tool_info["description"],
+                        "parameters": tool_info["parameters"]
+                    }
+                })
         
-        if skill_name:
-            skill_tool_name = f"skill_{skill_name}"
-            skill_tool = None
-            other_tools = []
-            
-            for tool in tools:
-                tool_name = tool.get("function", {}).get("name", "")
-                if tool_name == skill_tool_name:
-                    skill_tool = tool
-                else:
-                    other_tools.append(tool)
-            
-            if skill_tool:
-                tools = [skill_tool] + other_tools
+        all_tools = core_tools + predicted_tools
         
         if self.agent_config and self.agent_config.sub_agents:
             from agent.tool.subagent_tool import get_subagent_tools_for_agent
@@ -525,115 +469,824 @@ class Agent:
                 self.agent_config, 
                 self.delegation_depth
             )
-            tools.extend(subagent_tools)
+            all_tools.extend(subagent_tools)
         
-        return tools
-    
-    def _filter_tools(self, tools: List[Dict], patterns: List[str]) -> List[Dict]:
+        logger.info(f"[工具准备] 核心={len(core_tools)}, 预测={len(predicted_tools)}, 总计={len(all_tools)}")
+        
+        return all_tools
+
+    def _check_pending_task(self) -> Optional[Dict]:
         """
-        根据模式过滤工具（非技能工具）。
+        检查是否有未完成任务（代码判断）
+        
+        Returns:
+            未完成任务信息字典，无则返回 None
+        """
+        if not self.heartbeat_manager:
+            return None
+        
+        pending_info = self.heartbeat_manager.has_pending_task()
+        if not pending_info:
+            return None
+        
+        task_id = pending_info.get("task_id")
+        if not task_id:
+            return None
+        
+        task_tree = self.task_tree_manager.load(task_id)
+        if not task_tree:
+            return None
+        
+        heartbeat = self.heartbeat_manager.load()
+        if not heartbeat:
+            return None
+        
+        completed_steps = heartbeat.get("completed_steps", [])
+        current_step = self.task_tree_manager.get_current_step(task_id, heartbeat)
+        
+        return {
+            "task_id": task_id,
+            "task_goal": task_tree.get("task_goal", ""),
+            "progress": f"{len(completed_steps)}/{heartbeat.get('total_steps', 0)}",
+            "current_step": current_step,
+            "status": pending_info.get("status", "")
+        }
+
+    def _get_completed_results(self, task_id: str) -> List[Dict]:
+        """
+        获取已完成步骤的结果（用于执行阶段注入）
         
         Args:
-            tools: 所有工具列表
-            patterns: 允许的模式列表（支持通配符 *）
-            
+            task_id: 任务 ID
+        
         Returns:
-            过滤后的工具列表
+            已完成步骤结果列表
         """
-        import fnmatch
+        heartbeat = self.heartbeat_manager.load()
+        if not heartbeat:
+            return []
         
-        if not patterns or "*" in patterns:
-            return tools
+        completed_steps = set(heartbeat.get("completed_steps", []))
+        if not completed_steps:
+            return []
         
-        filtered = []
-        for tool in tools:
-            tool_name = tool.get("function", {}).get("name", "")
-            
-            if tool_name.startswith("skill_"):
-                filtered.append(tool)
-                continue
-            
-            for pattern in patterns:
-                if pattern == "*":
-                    filtered.append(tool)
-                    break
-                elif fnmatch.fnmatch(tool_name, pattern):
-                    filtered.append(tool)
-                    break
+        results_data = self.task_tree_manager.load_results(task_id)
+        if not results_data:
+            return []
         
-        return filtered
-    
-    def _filter_skills(self, tools: List[Dict], patterns: List[str]) -> List[Dict]:
+        completed_results = []
+        for result in results_data.get("results", []):
+            if result.get("step_id") in completed_steps:
+                completed_results.append({
+                    "step_id": result.get("step_id"),
+                    "step_desc": result.get("step_desc", ""),
+                    "tool_name": result.get("tool_name", ""),
+                    "summary": self._summarize_result(result.get("result", {}))
+                })
+        
+        return completed_results
+
+    def _format_previous_results(self, task_id: str, completed_steps: set) -> str:
         """
-        根据模式过滤技能工具。
+        格式化前置结果为简洁字符串
         
         Args:
-            tools: 所有工具列表
-            patterns: 允许的技能模式列表（支持通配符 *）
-            
+            task_id: 任务 ID
+            completed_steps: 已完成步骤 ID 集合
+        
         Returns:
-            过滤后的工具列表
+            格式化的前置结果字符串
         """
-        import fnmatch
+        if not completed_steps:
+            return ""
         
-        if not patterns or "*" in patterns:
-            return tools
+        results_data = self.task_tree_manager.load_results(task_id)
+        if not results_data:
+            return ""
         
-        filtered = []
-        for tool in tools:
-            tool_name = tool.get("function", {}).get("name", "")
+        formatted = []
+        for result in results_data.get("results", []):
+            step_id = result.get("step_id", "")
+            if step_id in completed_steps:
+                summary = self._summarize_result(result.get("result", {}), max_length=100)
+                formatted.append(f"[{step_id}] {summary}")
+        
+        return "\n".join(formatted) if formatted else ""
+
+    def _summarize_result(self, result: Dict, max_length: int = 200) -> str:
+        """
+        总结执行结果
+        
+        Args:
+            result: 执行结果字典
+            max_length: 最大长度
+        
+        Returns:
+            结果摘要字符串
+        """
+        if not result:
+            return "无结果"
+        
+        if isinstance(result, dict):
+            if "content" in result:
+                content = str(result["content"])
+                return content[:max_length] + "..." if len(content) > max_length else content
+            if "status" in result:
+                return f"状态: {result['status']}"
+        
+        return str(result)[:max_length]
+
+    def _execute_by_task_type(self, task_tree: Dict, user_input: str, counter: TokenCounter) -> dict:
+        """
+        根据 task_type 执行不同流程
+        
+        Args:
+            task_tree: 任务树字典（包含 prompt_tokens 和 completion_tokens）
+            user_input: 用户输入
+            counter: TokenCounter 实例
+        
+        Returns:
+            执行结果字典
+        """
+        task_type = task_tree.get("task_type", "new_task")
+        
+        if task_type == "continue":
+            return self._resume_task(counter)
+        
+        return self._execute_task_tree(task_tree, user_input, counter)
+
+    def _resume_task(self, counter: TokenCounter) -> dict:
+        """
+        继续执行未完成任务
+        
+        Args:
+            counter: TokenCounter 实例
+        
+        Returns:
+            执行结果字典
+        """
+        if not self.heartbeat_manager or not self.task_tree_manager:
+            return counter.build_result("任务拆解模块未初始化")
+        
+        heartbeat = self.heartbeat_manager.load()
+        if not heartbeat:
+            return counter.build_result("没有未完成的任务")
+        
+        task_id = heartbeat.get("task_id")
+        task_tree = self.task_tree_manager.load(task_id)
+        
+        if not task_tree:
+            return counter.build_result("任务树加载失败")
+        
+        logger.info(f"{Fore.CYAN}[断点续跑] 恢复任务: {task_id}{Style.RESET_ALL}")
+        
+        return self._execute_task_with_tree(task_tree, task_id, counter)
+
+    def _execute_task_tree(self, task_tree: Dict, user_input: str, counter: TokenCounter) -> dict:
+        """
+        执行任务树（新任务）
+        
+        如果有未完成任务，会先放弃旧任务再创建新任务。
+        
+        Args:
+            task_tree: 任务树字典（包含 prompt_tokens 和 completion_tokens）
+            user_input: 用户输入
+            counter: TokenCounter 实例
+        
+        Returns:
+            执行结果字典
+        """
+        counter.add_tokens(
+            task_tree.get("prompt_tokens", 0),
+            task_tree.get("completion_tokens", 0)
+        )
+        
+        if not self.task_tree_manager or not self.heartbeat_manager:
+            logger.warning(f"{Fore.YELLOW}[任务执行] 任务拆解模块未初始化，回退到普通对话{Style.RESET_ALL}")
+            result = self._original_chat(user_input)
+            counter.add_tokens(
+                result.get("total_prompt_tokens", 0),
+                result.get("total_completion_tokens", 0)
+            )
+            return counter.build_result(result.get("content", ""))
+        
+        heartbeat = self.heartbeat_manager.load()
+        if heartbeat and heartbeat.get("task_id"):
+            old_task_id = heartbeat.get("task_id")
+            self.task_tree_manager.update_task_status(old_task_id, "abandoned")
+            self.heartbeat_manager.clear()
+            logger.info(f"{Fore.CYAN}[任务切换] 已放弃旧任务: {old_task_id}{Style.RESET_ALL}")
+        
+        task_id = self.task_tree_manager.generate_task_id()
+        
+        self.task_tree_manager.save(task_id, task_tree)
+        self.heartbeat_manager.init(task_id, task_tree)
+        
+        logger.info(f"{Fore.CYAN}[任务执行] 创建新任务: {task_id}{Style.RESET_ALL}")
+        
+        return self._execute_task_with_tree(task_tree, task_id, counter)
+
+    def _execute_task_with_tree(self, task_tree: Dict, task_id: str, counter: TokenCounter) -> dict:
+        """
+        执行任务树（核心执行逻辑）
+        
+        Args:
+            task_tree: 任务树字典
+            task_id: 任务 ID
+            counter: TokenCounter 实例
+        
+        Returns:
+            执行结果字典
+        """
+        while True:
+            heartbeat = self.heartbeat_manager.load()
+            if not heartbeat:
+                break
             
-            if not tool_name.startswith("skill_"):
-                filtered.append(tool)
+            if heartbeat.get("status") == "completed":
+                logger.info(f"{Fore.GREEN}[任务完成] 任务 {task_id} 已完成{Style.RESET_ALL}")
+                break
+            
+            completed_steps = heartbeat.get("completed_steps", [])
+            current_step = self.task_tree_manager.get_runnable_step(task_id, completed_steps)
+            
+            if not current_step:
+                logger.info(f"{Fore.CYAN}[任务执行] 无可执行步骤，任务可能已完成{Style.RESET_ALL}")
+                break
+            
+            step_id = current_step.get("step_id")
+            required_abilities = current_step.get("required_abilities", [])
+            
+            if "continue" in required_abilities:
+                self.heartbeat_manager.start_step(step_id)
+                self.heartbeat_manager.complete_step(step_id)
+                self.task_tree_manager.update_step_status(task_id, step_id, "completed")
                 continue
             
-            skill_name = tool_name[6:]
+            task_context = {
+                "task_goal": task_tree.get("task_goal", ""),
+                "total_steps": task_tree.get("total_steps", 0),
+                "completed_steps": len(completed_steps),
+                "current_step": current_step,
+                "next_step_desc": self._get_next_step_desc(task_tree, completed_steps)
+            }
             
-            for pattern in patterns:
-                if pattern == "*":
-                    filtered.append(tool)
-                    break
-                elif fnmatch.fnmatch(skill_name, pattern):
-                    filtered.append(tool)
-                    break
+            self.conversation.inject_task_context(task_context)
+            
+            self.heartbeat_manager.start_step(step_id)
+            
+            tools = self._prepare_tools_for_ability_match(required_abilities)
+            
+            step_index = len(completed_steps) + 1
+            previous_results = self._format_previous_results(task_id, set(completed_steps))
+            
+            step_result = self._execute_step_with_tools(
+                current_step, 
+                tools, 
+                task_tree,
+                step_index,
+                previous_results
+            )
+            
+            counter.add_tokens(
+                step_result.get("prompt_tokens", 0),
+                step_result.get("completion_tokens", 0)
+            )
+            
+            if step_result.get("success"):
+                self.task_tree_manager.update_step_status(task_id, step_id, "completed")
+                self.heartbeat_manager.complete_step(step_id)
+                self.task_tree_manager.save_step_result(
+                    task_id, 
+                    step_id, 
+                    step_result.get("tool_name", ""),
+                    step_result.get("arguments", {}),
+                    step_result.get("result", {})
+                )
+            else:
+                self.task_tree_manager.increment_retry(task_id, step_id)
+                self.task_tree_manager.update_step_status(
+                    task_id, 
+                    step_id, 
+                    "failed",
+                    step_result.get("error")
+                )
+                self.heartbeat_manager.fail_step(step_id, step_result.get("error", "未知错误"))
+                logger.warning(f"{Fore.YELLOW}[任务执行] 步骤 {step_id} 失败: {step_result.get('error')}{Style.RESET_ALL}")
+            
+            with self.conversation._lock:
+                self.conversation._working_messages.clear()
+            
+            self.conversation.clear_task_context()
+            self.conversation.clear_injected_document()
         
-        return filtered
+        task_tree = self.task_tree_manager.load(task_id)
+        final_status = task_tree.get("status", "unknown") if task_tree else "unknown"
+        
+        if final_status in ["completed", "partial_completed"]:
+            self.heartbeat_manager.clear()
+            
+            summary_result = self._summarize_task_results(task_id, task_tree, counter)
+            
+            if final_status == "partial_completed":
+                failed_steps = [s for s in task_tree.get("task_tree", []) if s.get("status") == "failed"]
+                failed_info = "\n".join([f"- {s.get('step_id')}: {s.get('error_message', '未知错误')}" for s in failed_steps])
+                summary_result["content"] = f"{summary_result.get('content', '')}\n\n⚠️ 部分步骤执行失败:\n{failed_info}"
+            
+            self.conversation.add_message(role="assistant", content=summary_result.get("content", ""))
+            self.conversation.finalize_conversation(save_user_message=False)
+            
+            if self._auto_save:
+                self.conversation.save()
+            
+            return summary_result
+        else:
+            self.conversation.cancel_conversation()
+            return counter.build_result(f"任务执行中断，状态: {final_status}")
 
-    def _process_tool_calls(self, message: Any) -> bool:  # type: ignore[return]
+    def _summarize_task_results(self, task_id: str, task_tree: Dict, counter: TokenCounter) -> dict:
         """
-        处理大模型返回的工具调用请求，支持技能文档动态注入。
+        汇总任务执行结果
+        
+        Args:
+            task_id: 任务 ID
+            task_tree: 任务树
+            counter: TokenCounter 实例
+        
+        Returns:
+            汇总结果字典
+        """
+        results_data = self.task_tree_manager.load_results(task_id)
+        
+        if not results_data:
+            return counter.build_result(f"任务执行完成: {task_tree.get('task_goal', '')}")
+        
+        all_step_contents = []
+        all_results = []
+        for step_result in results_data.get("results", []):
+            result = step_result.get("result", {})
+            content = result.get("content", "")
+           
+            
+            if content:
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        actual_content = parsed.get("content", "")
+                        if actual_content:
+                            all_step_contents.append(f"[{step_result.get('step_id', '')}] {actual_content}")
+                            all_results.append(actual_content)
+                        else:
+                            all_step_contents.append(f"[{step_result.get('step_id', '')}] {content}")
+                            all_results.append(content)
+                            
+                    else:
+                        all_step_contents.append(f"[{step_result.get('step_id', '')}] {content}")
+                        all_results.append(content)
+                except (json.JSONDecodeError, TypeError):
+                    all_step_contents.append(f"[{step_result.get('step_id', '')}] {content}")
+                    all_results.append(content)
+        
+        if not all_step_contents:
+            return counter.build_result(f"任务执行完成: {task_tree.get('task_goal', '')}")
+        
+        task_goal = task_tree.get("task_goal", "")
+        summary_prompt = f"""用户的原始请求：{task_goal}
+            执行结果：
+            {chr(10).join(all_step_contents)}
+            
+            请根据用户的原始请求来决定回复方式：
+            - 如果用户要求简短回复，请简洁回答
+            - 如果用户要求详细报告，请详细说明
+            - 如果用户要求总结，请给出总结
+            - 如果用户没有特别要求，用自然友好的语气告诉用户你完成了什么
+            
+            直接回复用户，不要解释你的回复方式。"""
+        
+        try:
+            # 如果只有一步，直接返回内容
+            
+            if len(all_step_contents) > 1:
+                logger.debug(f"\n{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}")
+                logger.debug(f"{Fore.MAGENTA}📤 [任务汇总] 请求消息:{Style.RESET_ALL}")
+                logger.debug(f"{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}")
+                logger.debug(f"{Fore.YELLOW}{summary_prompt}{Style.RESET_ALL}")
+                logger.debug(f"{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}\n")
+        
+                response = self.llm_client.chat_completion(
+                messages=[{"role": "user", "content": summary_prompt}],
+                stream=False)
+                counter.add_usage(response)
+            
+                summary_content = response.choices[0].message.content or ""
+            else:
+                summary_content = re.sub(r'^\[step_\d+\]\s*', '', all_results[0] or "")
+                
+            logger.debug(f"[任务汇总] 生成总结成功")
+            print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}🤖 任务汇总回答:{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+            print(summary_content)
+            print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}\n")
+            
+            return counter.build_result(summary_content)
+        except Exception as e:
+            logger.error(f"[任务汇总] 生成总结失败: {e}")
+            return counter.build_result(f"任务执行完成: {task_goal}\n\n执行结果:\n" + "\n".join(all_step_contents))
 
-        处理流程：
-        1. 检查消息是否包含工具调用
-        2. 将 assistant 的 tool_calls 消息添加到对话历史
-        3. 遍历每个工具调用：
-           - 如果是 skill_xxx 调用，获取技能文档并注入到 system prompt
-           - 解析工具参数
-           - 执行工具并记录结果
-        4. 将工具执行结果添加到对话历史
+    def _prepare_tools_for_ability_match(self, required_abilities: List[str]) -> List[Dict]:
+        """
+        根据能力需求准备工具列表
+        
+        Args:
+            required_abilities: 所需能力列表
+        
+        Returns:
+            工具定义列表
+        """
+        core_tools = self._get_core_tools()
+        
+        if self.memory_system:
+            for ability in required_abilities:
+                if ability not in ["llm_response", "continue"]:
+                    discover_result = self.tool_adapter.call_tool("discover", {
+                        "query": ability,
+                        "resource_type": "tool"
+                    })
+                    
+                    if discover_result.get("status") == "success":
+                        tools = discover_result.get("data", {}).get("tools", [])
+                        for tool in tools:
+                            tool_name = tool.get("name")
+                            if tool_name and tool_name not in [t["function"]["name"] for t in core_tools]:
+                                if tool_name in self.tool_adapter.tools:
+                                    tool_info = self.tool_adapter.tools[tool_name]
+                                    core_tools.append({
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_name,
+                                            "description": tool_info.get("description", ""),
+                                            "parameters": tool_info.get("parameters", {})
+                                        }
+                                    })
+                                    
+                                    if tool_name.startswith("skill_"):
+                                        skill_name = tool_name[6:]
+                                        if not self.conversation.has_injected_skill(skill_name):
+                                            self._inject_skill_document(skill_name)
+        
+        return core_tools
 
+    def _execute_step_with_tools(
+        self, 
+        current_step: Dict, 
+        tools: List[Dict], 
+        task_tree: Dict,
+        step_index: int = 1,
+        previous_results: str = ""
+    ) -> dict:
+        """
+        执行需要工具的步骤
+        
+        Args:
+            current_step: 当前步骤
+            tools: 工具列表
+            task_tree: 任务树
+            step_index: 当前步骤序号（从1开始）
+            previous_results: 前置结果摘要
+        
+        Returns:
+            执行结果字典，包含 success, content, prompt_tokens, completion_tokens 等
+        """
+        step_desc = current_step.get("step_desc", "")
+        step_id = current_step.get("step_id", "unknown")
+        total_steps = task_tree.get("total_steps", 0)
+        task_goal = task_tree.get("task_goal", "")
+        
+        # 前置结果为空时显示引导语
+        previous_results_display = previous_results if previous_results else ""
+        
+        step_prompt = f"""【总体目标】{task_goal}
+【当前步骤】{step_id}（第{step_index}/{total_steps}步）
+【本步任务】{step_desc}
+
+⚠️ 重要规则：
+1. 你只需要执行【本步任务】，不要执行后续步骤
+2. 当本步任务完成后，在回答末尾添加 [STEP_DONE] 标记
+3. 如果任务无法完成或遇到错误，说明原因并添加 [STEP_FAILED] 标记
+5. 输出的内容必须有值，否则系统会崩溃
+
+【前置结果】{previous_results_display}"""
+        
+        print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}📍 开始执行步骤: {step_id}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}📝 步骤描述: {step_desc[:100]}{'...' if len(step_desc) > 100 else ''}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+        
+        self.conversation.add_message(role="user", content=step_prompt)
+        
+        current_tool_calls = 0
+        max_step_tool_calls = self.max_tool_calls
+        counter = TokenCounter()
+        has_called_tool = False
+        
+        while current_tool_calls < max_step_tool_calls:
+            current_tool_calls += 1
+            
+            try:
+                messages = self.conversation.get_messages()
+                logger.info(f"{Fore.CYAN}[步骤执行] 第 {current_tool_calls} 轮, 消息数: {len(messages) if messages else 0}{Style.RESET_ALL}")
+                logger.debug(f"[步骤执行] 工具数: {len(tools) if tools else 0}")
+                
+                print(f"\n{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}")
+                print(f"{Fore.MAGENTA}📤 [{step_id}] 请求消息:{Style.RESET_ALL}")
+                print(f"{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}")
+                print(messages)
+                print(f"{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}\n")
+                
+                response = self.llm_client.chat_completion(
+                    messages=messages,
+                    tools=tools,
+                    stream=False
+                )
+                
+                counter.add_usage(response)
+                
+                choice = response.choices[0]
+                message = choice.message
+                
+                reasoning_content = _extract_reasoning_content(message)
+                if reasoning_content:
+                    print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}🧠 [{step_id}] 思考过程:{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
+                    print(reasoning_content)
+                    print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+                
+                if not self._process_tool_calls(message):
+                    required_abilities = current_step.get("required_abilities", [])
+                    needs_tool = "llm_response" not in required_abilities
+                    content = message.content or ""
+                    
+                    if "[STEP_FAILED]" in content:
+                        final_content = content.replace("[STEP_FAILED]", "").strip()
+                        logger.warning(f"{Fore.YELLOW}[步骤执行] 模型报告任务失败{Style.RESET_ALL}")
+                        return {
+                            "success": False,
+                            "error": final_content or "任务执行失败",
+                            "content": final_content,
+                            "prompt_tokens": counter.total_prompt_tokens,
+                            "completion_tokens": counter.total_completion_tokens
+                        }
+                    
+                    if "[STEP_DONE]" in content:
+                        final_content = content.replace("[STEP_DONE]", "").strip()
+                        self.conversation.add_message(role="assistant", content=content)
+                        logger.info(f"{Fore.GREEN}[步骤执行] 模型报告任务完成{Style.RESET_ALL}")
+                        print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+                        print(f"{Fore.GREEN}🤖 [{step_id}] 步骤回答:{Style.RESET_ALL}")
+                        print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+                        print(final_content)
+                        print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}\n")
+                        return {
+                            "success": True,
+                            "content": final_content,
+                            "tool_name": "",
+                            "arguments": {},
+                            "result": {"content": final_content},
+                            "prompt_tokens": counter.total_prompt_tokens,
+                            "completion_tokens": counter.total_completion_tokens
+                        }
+                    
+                    if needs_tool:
+                        if not has_called_tool:
+                            warning_msg = "⚠ 当前步骤需要工具调用，请使用工具调用来完成任务，而不是用文字描述。完成后在回答末尾添加 [STEP_DONE] 标记。"
+                            logger.warning(f"{Fore.YELLOW}[步骤执行] 需要工具但未调用，要求模型调用工具{Style.RESET_ALL}")
+                        else:
+                            warning_msg = "⚠ 如果任务已完成请在回答末尾添加 [STEP_DONE] 标记，否则请继续调用工具完成任务。"
+                            logger.warning(f"{Fore.YELLOW}[步骤执行] 已调用过工具但未标记完成，询问是否继续{Style.RESET_ALL}")
+                        
+                        self.conversation.add_message(role="assistant", content=content or reasoning_content or "")
+                        self.conversation.add_message(role="user", content=warning_msg)
+                        continue
+                    
+                    self.conversation.add_message(role="assistant", content=content)
+                    
+                    final_content = content
+                    if not final_content and reasoning_content:
+                        final_content = reasoning_content
+                        logger.info(f"[步骤执行] content为空，使用思考内容作为兜底")
+                    
+                    print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}🤖 [{step_id}] 步骤回答:{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+                    print(final_content)
+                    print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}\n")
+                    
+                    return {
+                        "success": True,
+                        "content": final_content,
+                        "tool_name": "",
+                        "arguments": {},
+                        "result": {"content": final_content},
+                        "prompt_tokens": counter.total_prompt_tokens,
+                        "completion_tokens": counter.total_completion_tokens
+                    }
+                
+                has_called_tool = True
+                    
+            except Exception as e:
+                logger.error(f"{Fore.RED}[步骤执行] 工具调用失败: {e}{Style.RESET_ALL}")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "prompt_tokens": counter.total_prompt_tokens,
+                    "completion_tokens": counter.total_completion_tokens
+                }
+        
+        return {
+            "success": False,
+            "error": "达到最大工具调用次数",
+            "prompt_tokens": counter.total_prompt_tokens,
+            "completion_tokens": counter.total_completion_tokens
+        }
+
+    def _get_next_step_desc(self, task_tree: Dict, completed_steps: List[str]) -> str:
+        """
+        获取下一步骤描述
+        
+        Args:
+            task_tree: 任务树
+            completed_steps: 已完成步骤列表
+        
+        Returns:
+            下一步骤描述
+        """
+        completed_set = set(completed_steps)
+        steps = task_tree.get("task_tree", [])
+        
+        found_current = False
+        for step in steps:
+            if step["step_id"] in completed_set:
+                continue
+            if found_current:
+                return step.get("step_desc", "")
+            found_current = True
+        
+        return "无"
+    
+    def _original_chat(self, user_input: str, delegation_depth: Optional[int] = None, images: Optional[List[str]] = None, is_task_step: bool = False) -> dict:
+        """
+        原始对话方法（不涉及任务拆解）
+        
+        Args:
+            user_input: 用户输入
+            delegation_depth: 委托深度（可选）
+            images: 图片列表（可选）
+            is_task_step: 是否为任务步骤模式（任务拆解模式下的子步骤）
+        
+        Returns:
+            对话结果字典
+        """
+        if delegation_depth is not None:
+            self.delegation_depth = delegation_depth
+        
+        counter = TokenCounter()
+        
+        self.conversation.add_message(role="user", content=user_input, images=images)
+        
+        if not is_task_step and self._auto_save:
+            self.conversation.save()
+        
+        input_summary = user_input[:50] + "..." if len(user_input) > 50 else user_input
+        img_info = f", 图片: {len(images)} 张" if images else ""
+        logger.info(f"[对话开始] 会话: {self.conversation.session_id}, 输入: {input_summary}{img_info}")
+        
+        print_conversation_history(self.conversation.get_messages(), max_content_length=88888, print_last_only=True)
+        current_tool_calls = 0
+        
+        tools = self._prepare_tools_with_preprocess(user_input)
+   
+        logger.info(f"[工具准备] 工具数: {len(tools)}")
+
+        while current_tool_calls < self.max_tool_calls:
+            current_tool_calls += 1
+            messages = self.conversation.get_messages()
+            logger.info(f"{Fore.CYAN}[LLM调用] 第 {current_tool_calls} 轮, 消息数: {len(messages)}{Style.RESET_ALL}")
+            
+            try:
+                response = self.llm_client.chat_completion(
+                    messages=messages,
+                    tools=tools,
+                    stream=False
+                )
+                
+                counter.add_usage(response)
+            except Exception as e:
+                logger.error(f"[LLM错误] {str(e)}")
+                self._clear_skill_state()
+                self.conversation.cancel_conversation()
+                if not is_task_step and self._auto_save:
+                    self.conversation.save()
+                
+                return counter.build_result(f"大模型调用失败：{str(e)}")
+
+            choice = response.choices[0]
+            message = choice.message
+
+            reasoning_content = _extract_reasoning_content(message)
+            
+            has_tool_calls = hasattr(message, "tool_calls") and message.tool_calls
+            
+            if has_tool_calls:
+                if reasoning_content:
+                    logger.debug(f"[思考过程-工具调用] 模型进行了推理思考:")
+                    print(f"\n{Fore.MAGENTA}{'='*60}")
+                    print(f"🧠 思考过程 (工具调用阶段):")
+                    print(f"{'='*60}{Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}{reasoning_content}{Style.RESET_ALL}")
+                    print(f"{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}\n")
+            else:
+                if reasoning_content:
+                    logger.debug(f"[思考过程] 模型进行了推理思考:")
+                    print(f"\n{Fore.CYAN}{'='*60}")
+                    print(f"🧠 思考过程 (最终回答阶段):")
+                    print(f"{'='*60}{Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}{reasoning_content}{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+
+            if not self._process_tool_calls(message):
+                self.conversation.add_message(role="assistant", content=message.content)
+                
+                print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}🤖 回答:{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
+                print(message.content or "message.content=None")
+                print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}\n")
+                
+                response_len = len(message.content) if message.content else 0
+                logger.info(f"[对话结束] 会话: {self.conversation.session_id}, 回答长度: {response_len}, 耗时: {counter.elapsed_time:.2f}s")
+
+                self._clear_skill_state()
+
+                if is_task_step:
+                    with self.conversation._lock:
+                        self.conversation._working_messages.clear()
+                    logger.debug(f"[任务步骤] 清理临时工作区，不保存到历史")
+                else:
+                    self.conversation.finalize_conversation()
+                    if self._auto_save:
+                        self.conversation.save()
+
+                return counter.build_result(message.content or "")
+
+        self._clear_skill_state()
+
+        self.conversation.cancel_conversation()
+
+        if not is_task_step and self._auto_save:
+            self.conversation.save()
+        
+        return counter.build_result("已达到最大工具调用轮数，无法继续执行")
+
+    def _process_tool_calls(self, message: Any) -> bool:
+        """
+        处理工具调用
+        
         Args:
             message: 大模型返回的消息对象
-
+        
         Returns:
-            bool: 是否处理了工具调用（True=有工具调用，False=无工具调用）
+            是否处理了工具调用
         """
         if not hasattr(message, "tool_calls") or not message.tool_calls:
             return False
-
+        
         logger.info(f"{Fore.CYAN}检测到工具调用请求，共 {len(message.tool_calls)} 个工具{Style.RESET_ALL}")
-        logger.info(f"{Fore.CYAN}工具调用: {message.tool_calls or '无'}{Style.RESET_ALL}")
+        
+        tool_names = [tc.function.name for tc in message.tool_calls if tc.function.name]
+        logger.info(f"{Fore.CYAN}工具调用: {tool_names}{Style.RESET_ALL}")
 
         tool_calls_list: List[Dict[str, Any]] = []
+        valid_tool_calls = []
         for tc in message.tool_calls:
-            tool_calls_list.append({
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments
-                }
-            })
+            if tc.function.name:
+                tool_calls_list.append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                })
+                valid_tool_calls.append(tc)
+            else:
+                logger.warning(f"{Fore.YELLOW}跳过无效工具调用: name=None, id={tc.id}{Style.RESET_ALL}")
+        
+        if not valid_tool_calls:
+            logger.warning(f"{Fore.YELLOW}所有工具调用都无效，跳过处理{Style.RESET_ALL}")
+            return False
+        
         assistant_content = message.content or ""
         self.conversation.add_message(
             role="assistant",
@@ -642,15 +1295,45 @@ class Agent:
         )
         logger.info(f"{Fore.CYAN}已将 assistant 消息添加到对话历史，包含 {len(tool_calls_list)} 个工具调用{Style.RESET_ALL}")
 
-        for idx, tool_call in enumerate(message.tool_calls, 1):
-            tool_name = tool_call.function.name
-            logger.info(f"{Fore.YELLOW}[{idx}/{len(message.tool_calls)}] 正在执行工具: {tool_name}{Style.RESET_ALL}")
+        invalid_call_count = 0
+        max_invalid_calls = 7
 
-            if not tool_name:
-                error_msg = "错误：工具名称为空"
-                logger.error(f"{Fore.RED}工具名称为空{Style.RESET_ALL}")
-                self.conversation.add_tool_result(tool_call.id, "unknown", error_msg)
+        for idx, tool_call in enumerate(valid_tool_calls, 1):
+            tool_name = tool_call.function.name
+            logger.info(f"{Fore.YELLOW}[{idx}/{len(valid_tool_calls)}] 正在执行工具: {tool_name}{Style.RESET_ALL}")
+
+            invalid_reason = None
+            if not tool_call.function.arguments:
+                invalid_reason = "工具参数为空"
+            else:
+                try:
+                    args = json.loads(tool_call.function.arguments)
+                    if not args or args == {}:
+                        invalid_reason = "工具参数为空对象"
+                except json.JSONDecodeError:
+                    invalid_reason = f"参数格式错误: {tool_call.function.arguments[:50]}"
+
+            if invalid_reason:
+                invalid_call_count += 1
+                error_msg = f"无效工具调用（{invalid_reason}）。请检查工具名称和参数是否正确。"
+                logger.error(f"{Fore.RED}无效工具调用: {invalid_reason}（第 {invalid_call_count} 次）{Style.RESET_ALL}")
+                self.conversation.add_tool_result(tool_call.id, tool_name, error_msg)
+                
+                if invalid_call_count >= max_invalid_calls:
+                    final_error = (
+                        f"连续 {max_invalid_calls} 次无效工具调用。"
+                        f"可能原因：\n"
+                        f"1. 工具名称为空或不存在\n"
+                        f"2. 必填参数缺失或格式错误\n"
+                        f"3. 当前任务可能无法通过工具完成\n"
+                        f"请重新描述您的需求，或尝试简化问题。"
+                    )
+                    logger.error(f"{Fore.RED}连续 {max_invalid_calls} 次无效工具调用，终止循环{Style.RESET_ALL}")
+                    self.conversation.add_tool_result(tool_call.id, tool_name, final_error)
+                    return True
                 continue
+
+            invalid_call_count = 0
 
             try:
                 arguments = json.loads(tool_call.function.arguments)
@@ -718,10 +1401,8 @@ class Agent:
             )
 
         print_conversation_history(self.conversation.get_messages(), max_content_length=88888,print_last_only=True)
-        logger.info(f"{Fore.CYAN}=================================={Style.RESET_ALL}")
         logger.info(f"{Fore.CYAN}所有工具调用完成，继续生成回答...{Style.RESET_ALL}")
         
-        # 明确返回 True 表示已处理工具调用
         return True
 
     def _inject_skill_document(self, skill_name: str) -> bool:
@@ -781,197 +1462,80 @@ class Agent:
         if False:
             yield ""
 
-    def chat(self, user_input: str, delegation_depth: Optional[int] = None) -> dict:
+    def chat(self, user_input: str, delegation_depth: Optional[int] = None, images: Optional[List[str]] = None) -> dict:
         """
-        非流式对话方法（用于CLI和API调用），支持技能文档动态注入。
+        非流式对话方法（用于CLI和API调用），支持技能文档动态注入和任务拆解。
 
         Args:
             user_input: 用户输入
             delegation_depth: 委托深度（覆盖实例级别），用于子代理调用
+            images: 图片列表（可选），每项为 URL 或 base64 字符串
 
         Returns:
             dict: 包含 content, elapsed_time, total_prompt_tokens, total_completion_tokens
         """
-        if delegation_depth is not None:
-            self.delegation_depth = delegation_depth
-        
-        start_time = time.time()
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        
-        self.conversation.add_message(role="user", content=user_input)
-        
-        input_summary = user_input[:50] + "..." if len(user_input) > 50 else user_input
-        logger.info(f"[对话开始] 会话: {self.conversation.session_id}, 输入: {input_summary}")
-        
-        print_conversation_history(self.conversation.get_messages(), max_content_length=88888, print_last_only=True)
-        current_tool_calls = 0
-
-        detected_skill = self._detect_skill_from_input(user_input)
-        if detected_skill:
-            logger.info(f"[技能检测] 检测到指定技能: {detected_skill}")
-            logger.info(f"[技能检测] 使用指定技能: {detected_skill}")
-
-        tools = self._prepare_tools_for_skill(detected_skill)
-        logger.debug(f"[工具准备] 工具数: {len(tools)}")
-        
-        logger.debug(f"[工具准备] 工具列表：")
-        for tool in tools:
-            logger.debug(f"工具名: {tool}")
-        logger.info(f"系统提示词: {self.conversation.system_prompt}")
-
-        while current_tool_calls < self.max_tool_calls:
-            current_tool_calls += 1
-            logger.debug(f"[LLM调用] 第 {current_tool_calls} 轮, 消息数: {len(self.conversation.get_messages())}")
-            logger.info(f"[第 {current_tool_calls} 轮] 调用大模型...")
-                
-            try:
-                response = self.llm_client.chat_completion(
-                    messages=self.conversation.get_messages(),
-                    tools=tools,
-                    stream=False
+        with TokenCounter() as counter:
+            if delegation_depth is not None:
+                self.delegation_depth = delegation_depth
+            
+            if not self.task_decomposer or not self.task_tree_manager or not self.heartbeat_manager:
+                logger.info(f"{Fore.YELLOW}[任务拆解] 模块未初始化，使用普通对话模式{Style.RESET_ALL}")
+                result = self._original_chat(user_input, None, images)
+                counter.add_tokens(
+                    result.get("total_prompt_tokens", 0),
+                    result.get("total_completion_tokens", 0)
                 )
                 
-                if hasattr(response, 'usage') and response.usage:
-                    total_prompt_tokens += response.usage.prompt_tokens or 0
-                    total_completion_tokens += response.usage.completion_tokens or 0
-                    logger.info(f"[LLM响应] Token消耗: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, 累计: prompt={total_prompt_tokens}, completion={total_completion_tokens}")
+                context_window = self.llm_client.get_context_window()
+                history_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
+                context_usage_percent = (history_tokens / context_window * 100) if context_window > 0 else 0
+                
+                result["context_window"] = context_window
+                result["context_usage_percent"] = context_usage_percent
+                
+                return result
+            
+            with self.conversation._lock:
+                self.conversation.history.append({"role": "user", "content": user_input})
+            if self._auto_save:
+                self.conversation.save()
+            logger.info(f"[任务拆解] 用户消息已保存到历史")
+            
+            pending_task = self._check_pending_task()
+            
+            ability_tags = []
+            if self.memory_system:
+                ability_tags = self.memory_system.get_all_ability_tags() or []
+            
+            if not ability_tags:
+                ability_tags = ["llm_response", "文件读取", "文件写入", "命令执行", "网络搜索"]
+            
+            try:
+                task_tree = self.task_decomposer.analyze_and_decompose(
+                    user_task=user_input,
+                    ability_tags=ability_tags,
+                    pending_task=pending_task
+                )
+                
+                counter.add_tokens(
+                    task_tree.get("prompt_tokens", 0),
+                    task_tree.get("completion_tokens", 0)
+                )
+                
+                task_type = task_tree.get("task_type", "new_task")
+                logger.info(f"{Fore.CYAN}[任务分析] task_type: {task_type}{Style.RESET_ALL}")
+                
+                result = self._execute_by_task_type(task_tree, user_input, counter)
+                
+                context_window = self.llm_client.get_context_window()
+                history_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
+                context_usage_percent = (history_tokens / context_window * 100) if context_window > 0 else 0
+                
+                result["context_window"] = context_window
+                result["context_usage_percent"] = context_usage_percent
+                
+                return result
+                
             except Exception as e:
-                logger.error(f"[LLM错误] {str(e)}")
-                self.conversation.clear_injected_document()
-                self._last_skill_call = None
-                self._last_skill_repeat_count = 0
-                
-                self.conversation.cleanup_tool_messages()
-                
-                context_window = self.llm_client.get_context_window()
-                context_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
-                context_usage_percent = (context_tokens / context_window * 100) if context_window > 0 else 0
-                total_tokens = total_prompt_tokens + total_completion_tokens
-                elapsed = time.time() - start_time
-                context_window_display = f"{context_window // 1000}k" if context_window >= 1000 else str(context_window)
-
-                logger.error(f"大模型调用失败：{str(e)}")
-                logger.debug(f"📊 耗时: {elapsed:.2f}s | 输入: {total_prompt_tokens} | 输出: {total_completion_tokens} | 总计: {total_tokens}")
-                logger.debug(f"📋 上下文: {context_usage_percent:.1f}% of {context_window_display}")
-
-                return {
-                    "content": f"大模型调用失败：{str(e)}",
-                    "elapsed_time": elapsed,
-                    "total_prompt_tokens": total_prompt_tokens,
-                    "total_completion_tokens": total_completion_tokens,
-                    "total_tokens": total_tokens,
-                    "context_window": context_window,
-                    "context_usage_percent": context_usage_percent
-                }
-
-            choice = response.choices[0]
-            message = choice.message
-
-            reasoning_content = None
-            reasoning_tokens = None
-            
-            reasoning_content = getattr(message, 'reasoning_content', None)
-            if not reasoning_content:
-                reasoning_content = getattr(message, 'thinking_content', None)
-            if not reasoning_content:
-                reasoning_content = getattr(message, 'thoughts', None)
-            if not reasoning_content:
-                thinking_blocks = getattr(message, 'thinking', None)
-                if thinking_blocks and hasattr(thinking_blocks, '__iter__'):
-                    try:
-                        reasoning_content = '\n'.join([
-                            block.text if hasattr(block, 'text') else str(block)
-                            for block in thinking_blocks
-                        ])
-                    except:
-                        pass
-            
-            if hasattr(response, 'usage') and response.usage:
-                if hasattr(response.usage, 'completion_tokens_details'):
-                    reasoning_tokens = getattr(response.usage.completion_tokens_details, 'reasoning_tokens', None)
-            
-            if reasoning_content:
-                logger.info(f"[思考过程] 模型进行了推理思考:")
-                print(f"\n{Fore.CYAN}{'='*60}")
-                print(f"🧠 思考过程 (reasoning_content):")
-                print(f"{'='*60}{Style.RESET_ALL}")
-                print(f"{Fore.YELLOW}{reasoning_content}{Style.RESET_ALL}")
-                print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
-            elif reasoning_tokens and reasoning_tokens > 0:
-                logger.info(f"[思考过程] 模型使用了 {reasoning_tokens} 个推理 token (内容未公开)")
-                print(f"\n{Fore.CYAN}{'='*60}")
-                print(f"🧠 思考过程: 模型内部进行了 {reasoning_tokens} tokens 的推理")
-                print(f"   (推理内容不对外公开，仅显示 token 数量)")
-                print(f"{'='*60}{Style.RESET_ALL}\n")
-
-            if not self._process_tool_calls(message):
-                self.conversation.add_message(role="assistant", content=message.content)
-                
-                elapsed = time.time() - start_time
-                response_len = len(message.content) if message.content else 0
-                logger.info(f"[对话结束] 会话: {self.conversation.session_id}, 回答长度: {response_len}, 耗时: {elapsed:.2f}s")
-                logger.info(f"[完成] 回答生成完成:{message.content}")
-
-                if self.conversation.has_injected_skill():
-                    self.conversation.clear_injected_document()
-                self._last_skill_call = None
-                self._last_skill_repeat_count = 0
-
-                self.conversation.cleanup_tool_messages()
-
-                if self._auto_save:
-                    self.conversation.save()
-                
-                context_window = self.llm_client.get_context_window()
-                context_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
-                context_usage_percent = (context_tokens / context_window * 100) if context_window > 0 else 0
-                total_tokens = total_prompt_tokens + total_completion_tokens
-                context_window_display = f"{context_window // 1000}k" if context_window >= 1000 else str(context_window)
-
-                logger.debug(f"✓ 回答完成")
-                logger.debug(f"📊 耗时: {elapsed:.2f}s | 输入: {total_prompt_tokens} | 输出: {total_completion_tokens} | 总计: {total_tokens}")
-                logger.debug(f"📋 上下文: {context_usage_percent:.1f}% of {context_window_display}")
-
-                return {
-                    "content": message.content or "",
-                    "reasoning_content": reasoning_content,
-                    "elapsed_time": elapsed,
-                    "total_prompt_tokens": total_prompt_tokens,
-                    "total_completion_tokens": total_completion_tokens,
-                    "total_tokens": total_tokens,
-                    "context_window": context_window,
-                    "context_usage_percent": context_usage_percent
-                }
-
-        if self.conversation.has_injected_skill():
-            self.conversation.clear_injected_document()
-        self._last_skill_call = None
-        self._last_skill_repeat_count = 0
-
-        self.conversation.cleanup_tool_messages()
-
-        if self._auto_save:
-            self.conversation.save()
-        
-        context_window = self.llm_client.get_context_window()
-        context_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
-        context_usage_percent = (context_tokens / context_window * 100) if context_window > 0 else 0
-        total_tokens = total_prompt_tokens + total_completion_tokens
-        elapsed = time.time() - start_time
-        context_window_display = f"{context_window // 1000}k" if context_window >= 1000 else str(context_window)
-
-        logger.warning(f"[对话结束] 会话: {self.conversation.session_id}, 原因: 达到最大工具调用轮数")
-        logger.warning("[警告] 达到最大工具调用轮数")
-        logger.debug(f"📊 耗时: {elapsed:.2f}s | 输入: {total_prompt_tokens} | 输出: {total_completion_tokens} | 总计: {total_tokens}")
-        logger.debug(f"📋 上下文: {context_usage_percent:.1f}% of {context_window_display}")
-
-        return {
-            "content": "已达到最大工具调用轮数，无法继续执行",
-            "elapsed_time": elapsed,
-            "total_prompt_tokens": total_prompt_tokens,
-            "total_completion_tokens": total_completion_tokens,
-            "total_tokens": total_tokens,
-            "context_window": context_window,
-            "context_usage_percent": context_usage_percent
-        }
+                logger.error(f"{Fore.RED}[任务分析] 失败: {e}{Style.RESET_ALL}")
+                return counter.build_result(f"任务分析失败: {str(e)}")

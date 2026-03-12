@@ -143,9 +143,12 @@ class ToolAdapter:
                     "parameters": defi["function"]["parameters"]
                 })
         
-        if self.memory_system:
-            for tool_def in config.get("memory_tools", []):
-                tool_name = tool_def["name"]
+        for tool_def in config.get("memory_tools", []):
+            tool_name = tool_def["name"]
+            if tool_name in ["discover", "save_memory", "list_memories"]:
+                tool_def["func"] = self._get_memory_tool_func(tool_name)
+                all_tool_defs.append(tool_def)
+            elif self.memory_system:
                 tool_def["func"] = self._get_memory_tool_func(tool_name)
                 all_tool_defs.append(tool_def)
 
@@ -156,8 +159,12 @@ class ToolAdapter:
         """获取记忆系统工具函数"""
         if tool_name == "save_memory":
             return self._save_memory
+        elif tool_name == "discover":
+            return self._discover
         elif tool_name == "search_memory":
-            return self._search_memory
+            return self._discover
+        elif tool_name == "list_memories":
+            return self._list_memories
         elif tool_name == "delete_memory":
             return self._delete_memory
         elif tool_name == "register_tool":
@@ -205,6 +212,40 @@ class ToolAdapter:
             logger.error(f"保存记忆失败: {e}")
             return {"status": "error", "message": f"保存记忆失败: {str(e)}"}
     
+    def _list_memories(
+        self,
+        top_k: int = 10,
+        full: bool = True,
+        order: str = "desc"
+    ) -> Dict[str, Any]:
+        """
+        列出记忆（不需要搜索关键词）
+        
+        Args:
+            top_k: 返回数量，默认 10
+            full: 是否返回完整内容，默认 True
+            order: 排序方式，desc(最近的在前) / asc(最早的在前)，默认 desc
+        
+        Returns:
+            {"status": "success", "message": "...", "data": {"total_count": N, "returned_count": M, "memories": [...]}}
+        """
+        try:
+            result = self._run_async(
+                self.memory_system.list_memories(top_k, full, order)
+            )
+            
+            total_count = result.get("total_count", 0)
+            returned_count = result.get("returned_count", 0)
+            
+            return {
+                "status": "success",
+                "message": f"共 {total_count} 条记忆，返回前 {returned_count} 条",
+                "data": result
+            }
+        except Exception as e:
+            logger.error(f"列出记忆失败: {e}")
+            return {"status": "error", "message": f"列出记忆失败: {str(e)}"}
+    
     def _register_skill_tool(self, tool_name: str, func_def: Dict[str, Any]) -> bool:
         """
         注册单个技能工具到 self.tools
@@ -236,51 +277,68 @@ class ToolAdapter:
         }
         return True
     
-    def _search_memory(
-        self, 
-        query: str, 
-        search_type: str = "all", 
-        top_k: int = 10
+    def _discover(
+        self,
+        query: str = "",
+        resource_type: str = "all",
+        top_k: int = 10,
+        search_type: str = None,
+        distance_threshold: float = None
     ) -> Dict[str, Any]:
         """
-        搜索记忆并动态注册发现的工具
-        
-        当 search_type 为 "tool" 或 "all" 时，会搜索记忆索引中的工具，
+        发现可用资源：工具、技能、记忆
+
+        当 resource_type 为 "tool" 或 "all" 时，会搜索记忆索引中的工具，
         并将发现的工具动态注册到 tool_adapter.tools 中，使其可被直接调用。
-        
-        流程：
-        1. 搜索记忆索引
-        2. 发现工具时自动注册到 self.tools
-        3. 返回结果供大模型选择
-        
-        优化效果：
-        - 大模型调用 search_memory 后可直接调用发现的工具
-        - 无需再单独处理注册逻辑
+
+        Args:
+            query: 搜索关键词，为空时返回所有资源
+            resource_type: 资源类型 (tool/memory/all)
+            top_k: 返回数量
+            search_type: 兼容旧参数名，优先使用 resource_type
+            distance_threshold: L2 距离阈值，距离越小越相似，默认从配置读取
+
+        Returns:
+            {"status": "success", "message": "...", "data": {"tools": [...], "memories": [...]}}
         """
-        logger.info(f"[记忆搜索] 开始搜索, query={query}, search_type={search_type}, top_k={top_k}")
+        if search_type is not None:
+            resource_type = search_type
+
+        if distance_threshold is None:
+            from agent.config.configloader import GLOBAL_CONFIG
+            memory_config = GLOBAL_CONFIG.get("memory", {})
+            tool_search_config = memory_config.get("tool_search", {})
+            distance_threshold = tool_search_config.get("distance_threshold", 1.0)
+
+        # 处理空查询：当 query 为空时，使用较大的距离阈值以返回更多结果
+        if not query or query.strip() == "":
+            logger.info(f"[发现] 空查询模式，返回所有资源, resource_type={resource_type}, top_k={top_k}")
+            # 空查询时使用一个较大的阈值以确保返回所有结果
+            distance_threshold = max(distance_threshold * 10, 100.0)
+            query = ""
+
+        logger.info(f"[发现] 开始搜索, query={query}, resource_type={resource_type}, top_k={top_k}, threshold={distance_threshold}")
         
         try:
             results = self._run_async(
-                self.memory_system.search(query, search_type, top_k)
+                self.memory_system.search(query, resource_type, top_k, distance_threshold=distance_threshold)
             )
             
-            logger.info(f"[记忆搜索] 搜索结果: {len(results.get('tools', []))} 个工具, {len(results.get('memories', []))} 条记忆")
+            logger.info(f"[发现] 搜索结果: {len(results.get('tools', []))} 个工具, {len(results.get('memories', []))} 条记忆")
             
             registered_tools = []
             for tool_def in results.get("tools", []):
                 func_def = tool_def.get("function", tool_def)
                 tool_name = func_def.get("name", "")
+                distance = tool_def.get("_distance", 0)
                 if not tool_name:
-                    logger.debug(f"[记忆搜索] 跳过无名称工具")
                     continue
                 
                 if self._register_skill_tool(tool_name, func_def):
                     registered_tools.append(tool_name)
-                    logger.info(f"[记忆搜索] ✓ 动态注册技能工具: {tool_name}, 当前工具总数: {len(self.tools)}")
+                    logger.info(f"[发现] ✓ 动态注册工具: {tool_name}, distance={distance:.4f}, 当前工具总数: {len(self.tools)}")
                 elif tool_name in self.tools:
-                    logger.debug(f"[记忆搜索] 工具已存在，跳过注册: {tool_name}")
-                else:
-                    logger.debug(f"[记忆搜索] 跳过非技能工具: {tool_name}")
+                    logger.debug(f"[发现] 工具已存在: {tool_name}")
             
             tools_count = len(results.get("tools", []))
             memories_count = len(results.get("memories", []))
@@ -295,7 +353,7 @@ class ToolAdapter:
             
             message = f"找到 {', '.join(message_parts)}" if message_parts else "未找到相关内容"
             
-            logger.info(f"[记忆搜索] 完成: {message}")
+            logger.info(f"[发现] 完成: {message}")
             
             return {
                 "status": "success",
@@ -303,8 +361,8 @@ class ToolAdapter:
                 "data": results
             }
         except Exception as e:
-            logger.error(f"搜索记忆失败: {e}")
-            return {"status": "error", "message": f"搜索记忆失败: {str(e)}"}
+            logger.error(f"发现资源失败: {e}")
+            return {"status": "error", "message": f"发现资源失败: {str(e)}"}
     
     def _delete_memory(self, memory_id: str) -> Dict[str, Any]:
         """删除记忆"""
@@ -448,7 +506,7 @@ class ToolAdapter:
         尝试从记忆系统动态注册工具
         
         当工具不在 self.tools 中时，从记忆索引搜索并动态注册。
-        主要用于技能工具（skill_xxx）的按需加载。
+        支持技能工具（skill_xxx）和内置工具（file/shell/browser）的按需加载。
         
         Args:
             tool_name: 工具名称
@@ -458,12 +516,30 @@ class ToolAdapter:
         """
         logger.info(f"[动态注册] 开始尝试注册工具: {tool_name}")
         
-        if not self.memory_system:
-            logger.warning(f"[动态注册] 记忆系统未启用，无法动态注册")
+        if tool_name.startswith("skill_"):
+            return self._register_skill_tool_from_memory(tool_name)
+        elif tool_name.startswith("browser_"):
+            return self._register_builtin_tool_from_config(tool_name, "browser")
+        elif tool_name.startswith("file_"):
+            return self._register_builtin_tool_from_config(tool_name, "file")
+        # elif tool_name.startswith("shell_"):
+        #     return self._register_builtin_tool_from_config(tool_name, "shell")
+        else:
+            logger.debug(f"[动态注册] 未知工具类型，跳过: {tool_name}")
             return False
+    
+    def _register_skill_tool_from_memory(self, tool_name: str) -> bool:
+        """
+        从记忆系统注册技能工具
         
-        if not tool_name.startswith("skill_"):
-            logger.debug(f"[动态注册] 非技能工具，跳过: {tool_name}")
+        Args:
+            tool_name: 工具名称（skill_xxx 格式）
+        
+        Returns:
+            bool: 是否成功注册
+        """
+        if not self.memory_system:
+            logger.warning(f"[动态注册] 记忆系统未启用，无法动态注册技能工具")
             return False
         
         try:
@@ -495,7 +571,45 @@ class ToolAdapter:
             return False
             
         except Exception as e:
-            logger.error(f"[动态注册] 注册工具失败: {tool_name}, 错误: {e}")
+            logger.error(f"[动态注册] 注册技能工具失败: {tool_name}, 错误: {e}")
+            return False
+    
+    def _register_builtin_tool_from_config(self, tool_name: str, tool_type: str) -> bool:
+        """
+        从配置文件注册内置工具
+        
+        Args:
+            tool_name: 工具名称
+            tool_type: 工具类型（file/shell/browser）
+        
+        Returns:
+            bool: 是否成功注册
+        """
+        try:
+            config = self._load_tools_config()
+            tool_list_key = f"{tool_type}_tools"
+            tool_defs = config.get(tool_list_key, [])
+            
+            for tool_def in tool_defs:
+                if tool_def.get("name") == tool_name:
+                    method_name = tool_def.get("method")
+                    if not method_name:
+                        logger.warning(f"[动态注册] 工具定义缺少 method 字段: {tool_name}")
+                        return False
+                    
+                    tool_def_copy = tool_def.copy()
+                    tool_def_copy.pop("method", None)
+                    tool_def_copy["func"] = self._get_tool_func(tool_type, method_name)
+                    
+                    self.tools[tool_name] = tool_def_copy
+                    logger.info(f"[动态注册] ✓ 成功注册内置工具: {tool_name}, 当前工具总数: {len(self.tools)}")
+                    return True
+            
+            logger.warning(f"[动态注册] 配置文件中未找到工具: {tool_name}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"[动态注册] 注册内置工具失败: {tool_name}, 错误: {e}")
             return False
     
     def search_tools_from_memory(self, query: str, top_k: int = 5) -> List[Dict]:

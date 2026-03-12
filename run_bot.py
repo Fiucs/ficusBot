@@ -195,7 +195,7 @@ async def run_bot(
     
     if with_cli and agent:
         def run_cli_thread():
-            run_cli(agent)
+            asyncio.run(run_cli(agent))
         
         cli_thread = threading.Thread(target=run_cli_thread, daemon=True)
         cli_thread.start()

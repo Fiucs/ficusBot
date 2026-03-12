@@ -10,13 +10,17 @@ Agent 主模块
 该模块提供 Agent 实例获取、启动和 API 应用创建功能。
 支持消息层架构，统一消息处理入口。
 """
+import asyncio
 import re
 from typing import Dict, List, Optional
 
 from colorama import Fore, Style, init
+from loguru import logger
 
 from .config.configloader import GLOBAL_CONFIG
 from .utils.logger import setup_logger_from_config
+from .core.messaging.message import Message, MessageSource, MessageType
+from .core.messaging import get_channel
 
 init(autoreset=True)
 
@@ -54,7 +58,7 @@ def _init_messaging(agent_ids: Optional[List[str]] = None):
             continue
         handler = ChatHandler(agent_id, agent, AGENT_REGISTRY)
         channel.subscribe(
-            handler.handle,
+            handler,
             name=agent_id,
             filter_func=lambda msg, aid=agent_id: (
                 msg.metadata.get("target_agent") == aid or
@@ -65,11 +69,13 @@ def _init_messaging(agent_ids: Optional[List[str]] = None):
     return app
 
 
-def run_cli(agent):
+async def run_cli(agent):
     """命令行交互界面
     
     注意：调用此函数前应先调用 _init_messaging() 初始化消息层
     """
+    channel = get_channel()
+    
     current_agent_id = agent.agent_id if hasattr(agent, 'agent_id') else "default"
     
     print(f"{Fore.CYAN}{'='*50}{Style.RESET_ALL}")
@@ -214,25 +220,52 @@ def run_cli(agent):
             
             print(f"{Fore.CYAN}🤖 思考中...{Style.RESET_ALL}", flush=True)
             
-            result = agent.chat(user_input)
-            full_content = result.get("content", "")
+            message = Message.create(
+                source=MessageSource.CLI,
+                type=MessageType.CHAT,
+                content=user_input,
+                user_id="cli_user",
+                session_id=agent.conversation.session_id,
+                metadata={"target_agent": current_agent_id}
+            )
+            
+            logger.info(f"[CLI] 📤 发送消息到 Agent: {current_agent_id}")
+            response = await channel.publish(message, wait_for_response=True, timeout=3600.0)
+            
+            if response and response.success:
+                full_content = response.content
+            else:
+                error_msg = response.error if response else "无响应"
+                print(f"{Fore.RED}错误: {error_msg}{Style.RESET_ALL}")
+                continue
             
             if full_content:
                 plain_text = re.sub(r'\[/?[a-zA-Z][^\]]*\]', '', full_content).strip()
                 print(f"🤖 : {plain_text}{Style.RESET_ALL}\n")
-                total_tokens = result.get('total_prompt_tokens', 0) + result.get('total_completion_tokens', 0)
-                elapsed = result.get('elapsed_time', 0)
-                context_window = result.get('context_window', 128000)
-                context_usage_percent = result.get('context_usage_percent', 0)
+                
+                meta = response.metadata or {}
+                total_prompt_tokens = meta.get('total_prompt_tokens', 0)
+                total_completion_tokens = meta.get('total_completion_tokens', 0)
+                total_tokens = total_prompt_tokens + total_completion_tokens
+                elapsed = meta.get('elapsed_time', 0)
+                context_window = meta.get('context_window', 128000)
+                context_usage_percent = meta.get('context_usage_percent', 0)
                 context_window_display = f"{context_window // 1000}k" if context_window >= 1000 else str(context_window)
+                
                 print(f"{Fore.GREEN}✓ 回答完成{Style.RESET_ALL}")
-                print(f"{Fore.YELLOW}📊 耗时: {elapsed:.2f}s | 输入: {result.get('total_prompt_tokens', 0)} | 输出: {result.get('total_completion_tokens', 0)} | 总计: {total_tokens}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}📊 耗时: {elapsed:.2f}s | 输入: {total_prompt_tokens} | 输出: {total_completion_tokens} | 总计: {total_tokens}{Style.RESET_ALL}")
                 print(f"{Fore.CYAN}📋 上下文: {context_usage_percent:.1f}% of {context_window_display}{Style.RESET_ALL}")
             
         except KeyboardInterrupt:
-            break
-            
+            print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
+            break  
+        except EOFError:
+            print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
+            break   
         except Exception as e:
+            if "EOFError" in str(e):
+                print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
+                break
             print(f"{Fore.RED}错误: {str(e)}{Style.RESET_ALL}")
 
 

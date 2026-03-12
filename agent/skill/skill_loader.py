@@ -132,10 +132,10 @@ class SkillLoader:
             timings["frontmatter_load"] = (time.time() - step_start) * 1000
 
             step_start = time.time()
-            name_in_meta = meta.get("name")
-            if name_in_meta is None or str(name_in_meta).strip() != skill_name:
-                print(f"⚠️  技能加载失败：{skill_dir} 技能名与目录名不一致")
-                return None
+            # name_in_meta = meta.get("name")
+            # if name_in_meta is None or str(name_in_meta).strip() != skill_name:
+            #     print(f"⚠️  技能加载失败：{skill_dir} 技能名与目录名不一致")
+            #     return None
 
             required_fields = ["name", "description"]
             for field in required_fields:

@@ -51,7 +51,6 @@ from agent.core.messaging.dispatcher import MessageDispatcher
 from agent.core.messaging.handlers import (
     ChatHandler,
     CommandHandler,
-    TimerHandler,
 )
 
 from agent.core.messaging.middlewares import (
@@ -78,7 +77,6 @@ __all__ = [
     "MessageDispatcher",
     "ChatHandler",
     "CommandHandler",
-    "TimerHandler",
     "Middleware",
     "LoggingMiddleware",
     "ValidationMiddleware",

@@ -11,7 +11,7 @@
 # ======================================
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from agent.config.configloader import GLOBAL_CONFIG
 from loguru import logger
@@ -33,6 +33,7 @@ class LLMClient:
         - 支持多模型提供商(OpenAI、通义千问、Ollama等)
         - 获取模型上下文窗口大小
         - 计算消息的 token 数量
+        - 支持配置 extra_body 参数（厂商专属参数透传）
     
     核心方法:
         - chat_completion: 调用大模型进行对话补全
@@ -45,6 +46,7 @@ class LLMClient:
     配置项:
         - current_model_alias: 当前模型别名
         - current_model_config: 当前模型配置字典
+        - extra_body: 厂商专属参数，如 DashScope 的 enable_search
     """
     
     MODEL_CONTEXT_WINDOWS = {
@@ -329,6 +331,38 @@ class LLMClient:
         }
     }
     
+    def _merge_extra_body(self, config: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        合并配置中的 extra_body 参数到请求参数
+        
+        参数:
+            config: 模型配置字典
+            kwargs: 当前请求参数
+            
+        返回:
+            更新后的 kwargs
+            
+        配置示例:
+            "models": {
+                "qwen-plus": {
+                    "extra_body": {
+                        "enable_search": true
+                    }
+                }
+            }
+        """
+        extra_body_config = config.get("extra_body")
+        if not extra_body_config or not isinstance(extra_body_config, dict):
+            return kwargs
+        
+        if "extra_body" not in kwargs:
+            kwargs["extra_body"] = {}
+        
+        kwargs["extra_body"].update(extra_body_config)
+        logger.debug(f"[ExtraBody] 合并配置: {extra_body_config}")
+        
+        return kwargs
+    
     def _build_thinking_params(self, config: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """
         根据厂商配置构建 thinking 参数（2026-03-04 终极兼容版）
@@ -409,13 +443,15 @@ class LLMClient:
                     logger.debug(f"[Thinking] reasoning_effort={effort}")
 
         return kwargs
-    def chat_completion(self, messages: List[Dict[str, str]], tools: Optional[List[Dict[str, Any]]] = None, stream: Optional[bool] = None
+    def chat_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, stream: Optional[bool] = None
                             ,custom_model: Optional[str] = None):
         """
         调用大模型进行对话补全
         
         Args:
-            messages: 对话消息列表，每个消息包含role和content
+            messages: 对话消息列表，支持多模态格式
+                - 文本格式: {"role": "user", "content": "文本"}
+                - 多模态格式: {"role": "user", "content": [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]}
             tools: 可选的工具定义列表，用于Function Calling
             stream: 是否使用流式输出，None则使用配置默认值
             custom_model: 自定义模型名称，覆盖当前配置
@@ -456,10 +492,27 @@ class LLMClient:
                 kwargs["tool_choice"] = "auto"
             
             kwargs = self._build_thinking_params(config, kwargs)
+            kwargs = self._merge_extra_body(config, kwargs)
 
             import json
-            # logger.debug(f"[LLMClient] 完整请求参数:\n{json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)}")
-
+            import base64
+            
+            for msg in messages:
+                if isinstance(msg.get("content"), list):
+                    for item in msg.get("content", []):
+                        if item.get("type") == "image_url":
+                            img_url = item.get("image_url", {}).get("url", "")
+                            if img_url.startswith("data:"):
+                                logger.info(f"[LLMClient] 📷 发送图片， Base64 长度: {len(img_url)}")
+                                try:
+                                    header, data = img_url.split(",", 1)
+                                    mime_part = header.split(":")[1] if ":" in header else "image/jpeg"
+                                    logger.info(f"[LLMClient] 📷 MIME 类型: {mime_part}")
+                                    img_data = base64.b64decode(data)
+                                    logger.info(f"[LLMClient] 📷 图片大小: {len(img_data)} bytes")
+                                except Exception as e:
+                                    logger.error(f"[LLMClient] ❌ 图片解析失败: {e}")
+            
             return completion(**kwargs)
 
         except AuthenticationError:

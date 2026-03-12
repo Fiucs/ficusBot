@@ -15,8 +15,8 @@ HTTP 拦截上下文模块
     - InterceptContext: 拦截上下文
 """
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
 from fastapi import Request
 
 
@@ -31,14 +31,26 @@ class InterceptContext:
         user_id: 用户 ID
         session_id: 会话 ID
         content: 消息内容
+        images: 图片列表（可选）
         raw: 原始请求数据
         request: FastAPI Request 对象
+        metadata: 元数据字典
     """
     user_id: str
     session_id: str
     content: str
-    raw: dict
-    request: Request
+    images: Optional[List[str]] = field(default_factory=list)
+    raw: dict = field(default_factory=dict)
+    request: Optional[Request] = None
+    
+    @property
+    def metadata(self) -> dict:
+        """获取元数据（兼容属性访问）"""
+        return {
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            **self.raw
+        }
     
     def get(self, key: str, default: Any = None) -> Any:
         """

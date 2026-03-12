@@ -5,8 +5,8 @@
 
 功能说明:
     - /api/chat: 非流式聊天接口（通过消息层）
-    - /api/chat/stream: 流式聊天接口（直接调用 Agent）
-    - /api/chat/stream/{agent_id}: 流式聊天接口（指定 Agent）
+    - /api/chat/stream: 流式聊天接口（通过消息层）
+    - /api/chat/stream/{agent_id}: 流式聊天接口（指定 Agent，通过消息层）
     - /api/tools: 获取工具列表
     - /api/skills: 获取技能列表
     - /api/agents: 获取可用 Agent 列表
@@ -29,7 +29,9 @@ from ..intercepted_router import InterceptedRouter
 from ..intercept_context import InterceptContext
 from agent.main import get_agent
 from agent.server.http.http_result import HttpResult
-
+from agent.core.messaging import (
+        Message, MessageSource, MessageType, get_channel
+    )
 
 router = InterceptedRouter()
 
@@ -40,6 +42,7 @@ class ChatRequest(BaseModel):
     
     Attributes:
         content: 消息内容
+        images: 图片列表，每项为 URL 或 base64 字符串
         user_id: 用户ID
         session_id: 会话ID
         target_agent: 目标 Agent ID（单播）
@@ -47,6 +50,7 @@ class ChatRequest(BaseModel):
         broadcast: 是否广播到所有 Agent
     """
     content: str
+    images: Optional[List[str]] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     target_agent: Optional[str] = None
@@ -71,9 +75,7 @@ async def chat(request: ChatRequest) -> Dict[str, Any]:
     Returns:
         HttpResult 格式的响应
     """
-    from agent.core.messaging import (
-        Message, MessageSource, MessageType, get_channel
-    )
+
     
     try:
         metadata = {}
@@ -89,13 +91,14 @@ async def chat(request: ChatRequest) -> Dict[str, Any]:
             source=MessageSource.API,
             type=MessageType.CHAT,
             content=request.content,
+            images=request.images,
             user_id=request.user_id or "",
             session_id=request.session_id,
             metadata=metadata
         )
         
         channel = get_channel()
-        response = await channel.publish(message, wait_for_response=True, timeout=120.0)
+        response = await channel.publish(message, wait_for_response=True, timeout=3600)
         
         if response is None:
             return HttpResult.error(message="无处理器响应").to_dict()
@@ -121,18 +124,35 @@ async def chat(request: ChatRequest) -> Dict[str, Any]:
 @router.api("/api/chat/stream", methods=["POST"])
 async def chat_stream(ctx: InterceptContext):
     """
-    流式聊天接口（直接调用默认 Agent）
+    流式聊天接口（通过消息层）
     
-    注意：流式接口暂不支持消息层路由，直接调用默认 Agent。
+    支持路由到指定 Agent，通过 ctx.metadata 或请求参数指定。
     
     Returns:
         StreamingResponse: SSE 流式响应
     """
-    agent = get_agent()
-    
     try:
+        target_agent = ctx.metadata.get("target_agent", "default") if ctx.metadata else "default"
+        
+        message = Message.create(
+            source=MessageSource.API,
+            type=MessageType.CHAT,
+            content=ctx.content,
+            images=ctx.images,
+            user_id=ctx.metadata.get("user_id", "") if ctx.metadata else "",
+            session_id=ctx.metadata.get("session_id") if ctx.metadata else None,
+            metadata={"target_agent": target_agent}
+        )
+        
+        channel = get_channel()
+        # 增加超时时间，防止处理耗时过长
+        response = await channel.publish_stream(message, timeout=3600.0)
+        
+        if not response.success:
+            raise HTTPException(status_code=500, detail=response.error or "流式处理失败")
+        
         async def generate():
-            async for chunk in agent.chat_stream(ctx.content):
+            async for chunk in response.generator:
                 yield chunk
         
         return StreamingResponse(
@@ -143,6 +163,8 @@ async def chat_stream(ctx: InterceptContext):
                 "Connection": "keep-alive",
             }
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -150,7 +172,7 @@ async def chat_stream(ctx: InterceptContext):
 @router.api("/api/chat/stream/{agent_id}", methods=["POST"])
 async def chat_stream_with_agent(ctx: InterceptContext, agent_id: str):
     """
-    流式聊天接口（指定 Agent）
+    流式聊天接口（指定 Agent，通过消息层）
     
     Args:
         agent_id: Agent ID
@@ -159,10 +181,26 @@ async def chat_stream_with_agent(ctx: InterceptContext, agent_id: str):
         StreamingResponse: SSE 流式响应
     """
     try:
-        agent = get_agent(agent_id)
+        message = Message.create(
+            source=MessageSource.API,
+            type=MessageType.CHAT,
+            content=ctx.content,
+            images=ctx.images,
+            user_id=ctx.metadata.get("user_id", "") if ctx.metadata else "",
+            session_id=ctx.metadata.get("session_id") if ctx.metadata else None,
+            metadata={"target_agent": agent_id}
+        )
+        
+        channel = get_channel()
+        response = await channel.publish_stream(message, timeout=3600.0)
+        
+        if not response.success:
+            if "not found" in (response.error or "").lower():
+                raise HTTPException(status_code=404, detail=response.error)
+            raise HTTPException(status_code=500, detail=response.error or "流式处理失败")
         
         async def generate():
-            async for chunk in agent.chat_stream(ctx.content):
+            async for chunk in response.generator:
                 yield chunk
         
         return StreamingResponse(
@@ -173,8 +211,8 @@ async def chat_stream_with_agent(ctx: InterceptContext, agent_id: str):
                 "Connection": "keep-alive",
             }
         )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

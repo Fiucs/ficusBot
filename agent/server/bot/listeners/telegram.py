@@ -181,13 +181,28 @@ class TelegramListener(BaseListener):
         
         message_type = "text"
         content = ""
+        images = []
         
         if msg.text:
             message_type = "text"
             content = msg.text
         elif msg.photo:
             message_type = "image"
-            content = msg.photo[-1].file_id if msg.photo else ""
+            content = msg.caption or ""
+            if msg.photo:
+                largest_photo = msg.photo[-1]
+                try:
+                    file = await self._bot.get_file(largest_photo.file_id)
+                    import base64
+                    import io
+                    photo_bytes = io.BytesIO()
+                    await file.download_to_memory(photo_bytes)
+                    photo_base64 = base64.b64encode(photo_bytes.getvalue()).decode('utf-8')
+                    images.append(f"data:image/jpeg;base64,{photo_base64}")
+                    logger.info(f"[{self.name}] 已下载图片，大小: {len(photo_bytes.getvalue())} bytes")
+                except Exception as e:
+                    logger.error(f"[{self.name}] 下载图片失败: {e}")
+                    content = f"{content}\n[图片下载失败]".strip()
         elif msg.document:
             message_type = "file"
             content = msg.document.file_name or ""
@@ -211,6 +226,7 @@ class TelegramListener(BaseListener):
             platform=self.PLATFORM_NAME,
             type=message_type,
             content=content,
+            images=images,
             user_id=str(msg.from_user.id) if msg.from_user else "",
             chat_id=str(msg.chat_id),
             thread_id=thread_id,

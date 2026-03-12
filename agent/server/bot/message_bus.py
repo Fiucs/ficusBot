@@ -22,12 +22,16 @@ class UnifiedMessage:
     统一消息格式
     
     所有监听器必须将平台消息转换为此格式。
+    
+    Attributes:
+        images: 图片列表，每项为 URL 或 base64 字符串
     """
     id: Optional[str] = None
     listener: str = ""
     platform: str = ""
     type: str = "text"
     content: Any = ""
+    images: List[str] = field(default_factory=list)
     user_id: str = ""
     chat_id: str = ""
     thread_id: Optional[str] = None
@@ -42,6 +46,7 @@ class UnifiedMessage:
             "platform": self.platform,
             "type": self.type,
             "content": self.content,
+            "images": self.images,
             "user_id": self.user_id,
             "chat_id": self.chat_id,
             "thread_id": self.thread_id,
@@ -58,6 +63,7 @@ class UnifiedMessage:
             platform=data.get("platform", ""),
             type=data.get("type", "text"),
             content=data.get("content", ""),
+            images=data.get("images", []),
             user_id=data.get("user_id", ""),
             chat_id=data.get("chat_id", ""),
             thread_id=data.get("thread_id"),
@@ -285,7 +291,7 @@ class MessageBusAdapter:
             response = await self._channel.publish(
                 message, 
                 wait_for_response=True,
-                timeout=120.0
+                timeout=3600.0
             )
             
             return response

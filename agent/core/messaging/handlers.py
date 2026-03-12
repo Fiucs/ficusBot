@@ -14,7 +14,7 @@ import time
 from typing import List, Optional, TYPE_CHECKING
 from loguru import logger
 
-from agent.core.messaging.message import Message, MessageResponse
+from agent.core.messaging.message import Message, MessageResponse, StreamResponse
 
 if TYPE_CHECKING:
     from agent.core.agent import Agent
@@ -120,13 +120,12 @@ class ChatHandler:
             响应对象
         """
         handle_start = time.time()
-        logger.debug(f"[ChatHandler] ========== 开始处理消息 ==========")
-        logger.debug(f"[ChatHandler] 消息ID: {message.id}")
+        logger.info(f"[ChatHandler] 📨 开始处理消息 | ID: {message.id}")
         logger.debug(f"[ChatHandler] 消息内容: {message.content[:100]}..." if len(message.content) > 100 else f"[ChatHandler] 消息内容: {message.content}")
         
         agents = self._get_target_agents(message)
         agent_ids = [a.agent_id for a in agents]
-        logger.debug(f"[ChatHandler] 目标 Agent 数量: {len(agents)}, IDs: {agent_ids}")
+        logger.info(f"[ChatHandler] 🎯 目标 Agent: {agent_ids}")
         
         if len(agents) == 1:
             logger.debug(f"[ChatHandler] 单 Agent 处理模式")
@@ -136,8 +135,7 @@ class ChatHandler:
             response = await self._handle_multiple(agents, message)
         
         handle_elapsed = time.time() - handle_start
-        logger.debug(f"[ChatHandler] 处理完成，耗时: {handle_elapsed:.3f}s，成功: {response.success}")
-        logger.debug(f"[ChatHandler] ========== 处理消息结束 ==========")
+        logger.info(f"[ChatHandler] ✅ 处理完成 | 耗时: {handle_elapsed:.3f}s | 成功: {response.success}")
         
         return response
     
@@ -163,12 +161,11 @@ class ChatHandler:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
-                agent.chat,
-                message.content
+                lambda: agent.chat(message.content, images=message.images)
             )
             
             single_elapsed = time.time() - single_start
-            logger.debug(f"[ChatHandler] Agent '{agent.agent_id}' 执行成功，耗时: {single_elapsed:.3f}s")
+            logger.info(f"[ChatHandler] 🤖 Agent '{agent.agent_id}' 执行成功 | 耗时: {single_elapsed:.3f}s")
             logger.debug(f"[ChatHandler] 响应内容长度: {len(result.get('content', ''))}")
             logger.debug(f"[ChatHandler] Token 统计 - 输入: {result.get('total_prompt_tokens', 0)}, 输出: {result.get('total_completion_tokens', 0)}")
             
@@ -179,7 +176,11 @@ class ChatHandler:
                 metadata={
                     "agent_id": agent.agent_id,
                     "elapsed_time": result.get("elapsed_time"),
-                    "total_tokens": result.get("total_tokens")
+                    "total_prompt_tokens": result.get("total_prompt_tokens", 0),
+                    "total_completion_tokens": result.get("total_completion_tokens", 0),
+                    "total_tokens": result.get("total_tokens"),
+                    "context_window": result.get("context_window", 128000),
+                    "context_usage_percent": result.get("context_usage_percent", 0)
                 }
             )
         except Exception as e:
@@ -257,6 +258,57 @@ class ChatHandler:
             metadata={"agents": results},
             responses=results
         )
+    
+    async def handle_stream(self, message: Message) -> StreamResponse:
+        """
+        流式处理消息
+        
+        Args:
+            message: 消息对象
+            
+        Returns:
+            流式响应包装对象，包含生成器
+        """
+        handle_start = time.time()
+        logger.info(f"[ChatHandler] 📨 开始流式处理消息 | ID: {message.id}")
+        logger.debug(f"[ChatHandler] 消息内容: {message.content[:100]}..." if len(message.content) > 100 else f"[ChatHandler] 消息内容: {message.content}")
+        
+        agents = self._get_target_agents(message)
+        
+        if len(agents) > 1:
+            logger.warning(f"[ChatHandler] 流式模式不支持多 Agent，仅使用第一个: {agents[0].agent_id}")
+        
+        agent = agents[0]
+        logger.info(f"[ChatHandler] 🎯 目标 Agent: {agent.agent_id}")
+        
+        try:
+            async def stream_generator():
+                """流式生成器，包装 Agent 的 chat_stream"""
+                chunk_count = 0
+                try:
+                    async for chunk in agent.chat_stream(message.content):
+                        chunk_count += 1
+                        yield chunk
+                except Exception as e:
+                    logger.error(f"[ChatHandler] 流式生成异常: {e}")
+                    yield f"[错误: {e}]"
+                finally:
+                    elapsed = time.time() - handle_start
+                    logger.info(f"[ChatHandler] ✅ 流式处理完成 | 耗时: {elapsed:.3f}s | chunks: {chunk_count}")
+            
+            return StreamResponse(
+                message_id=message.id,
+                generator=stream_generator(),
+                success=True,
+                metadata={
+                    "agent_id": agent.agent_id,
+                    "stream": True
+                }
+            )
+        except Exception as e:
+            elapsed = time.time() - handle_start
+            logger.error(f"[ChatHandler] 流式处理初始化失败 | 耗时: {elapsed:.3f}s | 错误: {e}")
+            return StreamResponse.error_response(message.id, str(e))
 
 
 class CommandHandler:
@@ -374,102 +426,107 @@ class CommandHandler:
         )
 
 
-class TimerHandler:
-    """
-    定时任务处理器
+
+# 示例：定时任务处理器
+
+# class TimerHandler:
+#     """
+#     定时任务处理器
     
-    功能说明:
-        - 处理定时任务触发消息
-        - 支持指定目标 Agent
-        - 支持多播任务
+#     功能说明:
+#         - 处理定时任务触发消息
+#         - 支持指定目标 Agent
+#         - 支持多播任务
     
-    核心方法:
-        - handle: 处理定时任务消息
-    """
+#     核心方法:
+#         - handle: 处理定时任务消息
+#     """
     
-    def __init__(self, registry: Optional["AgentRegistry"] = None):
-        """
-        初始化定时任务处理器
+#     def __init__(self, registry: Optional["AgentRegistry"] = None):
+#         """
+#         初始化定时任务处理器
         
-        Args:
-            registry: Agent 注册中心
-        """
-        self._registry = registry
-        logger.debug(f"[TimerHandler] 初始化定时任务处理器，有注册中心: {registry is not None}")
+#         Args:
+#             registry: Agent 注册中心
+#         """
+#         self._registry = registry
+#         logger.debug(f"[TimerHandler] 初始化定时任务处理器，有注册中心: {registry is not None}")
     
-    async def handle(self, message: Message) -> MessageResponse:
-        """
-        处理定时任务消息
+#     async def handle(self, message: Message) -> MessageResponse:
+#         """
+#         处理定时任务消息
         
-        Args:
-            message: 消息对象
+#         Args:
+#             message: 消息对象
             
-        Returns:
-            响应对象
-        """
-        timer_start = time.time()
-        logger.debug(f"[TimerHandler] ========== 开始处理定时任务 ==========")
-        logger.debug(f"[TimerHandler] 消息ID: {message.id}")
-        logger.debug(f"[TimerHandler] 任务内容: {message.content[:100]}..." if len(message.content) > 100 else f"[TimerHandler] 任务内容: {message.content}")
+#         Returns:
+#             响应对象
+#         """
+#         timer_start = time.time()
+#         logger.debug(f"[TimerHandler] ========== 开始处理定时任务 ==========")
+#         logger.debug(f"[TimerHandler] 消息ID: {message.id}")
+#         logger.debug(f"[TimerHandler] 任务内容: {message.content[:100]}..." if len(message.content) > 100 else f"[TimerHandler] 任务内容: {message.content}")
         
-        if not self._registry:
-            logger.error(f"[TimerHandler] 无注册中心配置")
-            return MessageResponse(
-                message_id=message.id,
-                success=False,
-                error="No registry configured"
-            )
+#         if not self._registry:
+#             logger.error(f"[TimerHandler] 无注册中心配置")
+#             return MessageResponse(
+#                 message_id=message.id,
+#                 success=False,
+#                 error="No registry configured"
+#             )
         
-        target_agents = message.metadata.get("target_agents", [])
-        if not target_agents:
-            target_id = message.metadata.get("target_agent", "default")
-            target_agents = [target_id]
+#         target_agents = message.metadata.get("target_agents", [])
+#         if not target_agents:
+#             target_id = message.metadata.get("target_agent", "default")
+#             target_agents = [target_id]
         
-        logger.debug(f"[TimerHandler] 目标 Agent: {target_agents}")
+#         logger.debug(f"[TimerHandler] 目标 Agent: {target_agents}")
         
-        results = []
-        for agent_id in target_agents:
-            agent_start = time.time()
-            logger.debug(f"[TimerHandler] 开始处理 Agent: {agent_id}")
+#         results = []
+#         for agent_id in target_agents:
+#             agent_start = time.time()
+#             logger.debug(f"[TimerHandler] 开始处理 Agent: {agent_id}")
             
-            try:
-                agent = self._registry.get_agent(agent_id)
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    agent.chat,
-                    message.content
-                )
+#             try:
+#                 agent = self._registry.get_agent(agent_id)
+#                 loop = asyncio.get_event_loop()
+#                 result = await loop.run_in_executor(
+#                     None,
+#                     agent.chat,
+#                     message.content
+#                 )
                 
-                agent_elapsed = time.time() - agent_start
-                logger.debug(f"[TimerHandler] Agent '{agent_id}' 执行成功，耗时: {agent_elapsed:.3f}s")
+#                 agent_elapsed = time.time() - agent_start
+#                 logger.debug(f"[TimerHandler] Agent '{agent_id}' 执行成功，耗时: {agent_elapsed:.3f}s")
                 
-                results.append({
-                    "agent_id": agent_id,
-                    "success": True,
-                    "content": result.get("content", "")
-                })
-            except Exception as e:
-                agent_elapsed = time.time() - agent_start
-                logger.error(f"[TimerHandler] Agent '{agent_id}' 执行异常，耗时: {agent_elapsed:.3f}s，错误: {e}")
-                results.append({
-                    "agent_id": agent_id,
-                    "success": False,
-                    "error": str(e)
-                })
+#                 results.append({
+#                     "agent_id": agent_id,
+#                     "success": True,
+#                     "content": result.get("content", "")
+#                 })
+#             except Exception as e:
+#                 agent_elapsed = time.time() - agent_start
+#                 logger.error(f"[TimerHandler] Agent '{agent_id}' 执行异常，耗时: {agent_elapsed:.3f}s，错误: {e}")
+#                 results.append({
+#                     "agent_id": agent_id,
+#                     "success": False,
+#                     "error": str(e)
+#                 })
         
-        success_count = sum(1 for r in results if r.get("success"))
-        timer_elapsed = time.time() - timer_start
+#         success_count = sum(1 for r in results if r.get("success"))
+#         timer_elapsed = time.time() - timer_start
         
-        logger.debug(f"[TimerHandler] 定时任务处理完成，成功: {success_count}/{len(target_agents)}，总耗时: {timer_elapsed:.3f}s")
-        logger.debug(f"[TimerHandler] ========== 处理定时任务结束 ==========")
+#         logger.debug(f"[TimerHandler] 定时任务处理完成，成功: {success_count}/{len(target_agents)}，总耗时: {timer_elapsed:.3f}s")
+#         logger.debug(f"[TimerHandler] ========== 处理定时任务结束 ==========")
         
-        return MessageResponse(
-            message_id=message.id,
-            content="\n---\n".join(
-                f"[{r['agent_id']}]\n{r.get('content', r.get('error'))}"
-                for r in results
-            ),
-            success=success_count > 0,
-            responses=results
-        )
+#         return MessageResponse(
+#             message_id=message.id,
+#             content="\n---\n".join(
+#                 f"[{r['agent_id']}]\n{r.get('content', r.get('error'))}"
+#                 for r in results
+#             ),
+#             success=success_count > 0,
+#             responses=results
+#         )
+
+

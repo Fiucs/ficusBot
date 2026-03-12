@@ -1,0 +1,62 @@
+# FicusBot 运行时数据目录
+.ficsbot/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local config (keep example)
+config.json
+config.yaml
+test*
+example_satori.py
+单代理任务拆解与 JIT 动态工具加载 ReAct 架构设计.md
+DOCS.md
+OIP-C.png
+plan.MD
+prompt.txt
+.trae/
+docs/

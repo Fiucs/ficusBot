@@ -1,6 +1,6 @@
 {
-    // 基础路径配置
-    "workspace_root": "./workspace",
+    // 基础路径配置（统一存放于 .ficsbot 目录）
+    "workspace_root": "./.ficsbot/workspace",
     // 文件操作白名单：仅允许访问这些目录（为空则不限制）
     "file_allow_list": [
     ],
@@ -373,7 +373,7 @@
     // 日志配置
     "log": {
         "enable_file": false,
-        "log_dir": "./logs",
+        "log_dir": "./.ficsbot/logs",
         "level": "INFO",
         "console_level": "DEBUG",
         "rotation": "10 MB",
@@ -383,7 +383,7 @@
     // 会话持久化配置
     "session": {
         "enable_persistence": true,
-        "storage_dir": "./sessions",
+        "storage_dir": "./.ficsbot/sessions",
         "max_sessions": 100,
         "expire_days": 30,
         "auto_save": true,

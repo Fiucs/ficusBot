@@ -18,6 +18,7 @@
 import sys
 import os
 import argparse
+import asyncio
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -96,6 +97,7 @@ def main():
     
     host = args.host or GLOBAL_CONFIG.get("api.host", "0.0.0.0")
     port = args.port or GLOBAL_CONFIG.get("api.port", 18080)
+    _init_messaging(agent_ids_to_start)
     
     if args.api:
         from agent.utils.network import get_local_ip
@@ -112,8 +114,7 @@ def main():
         app = get_app()
         uvicorn.run(app, host=host, port=port)
     else:
-        _init_messaging(agent_ids_to_start)
-        run_cli(agent)
+        asyncio.run(run_cli(agent))
 
 
 if __name__ == "__main__":

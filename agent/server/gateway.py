@@ -360,12 +360,22 @@ class Gateway:
             logger.info("[Gateway] 收到停止信号")
             stop_event.set()
         
+        loop = asyncio.get_event_loop()
+        signal_handlers = []
+        
         try:
-            loop = asyncio.get_event_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, signal_handler)
+                signal_handlers.append(sig)
         except NotImplementedError:
-            pass
+            import sys
+            if sys.platform == 'win32':
+                def win_signal_handler(signum, frame):
+                    logger.info("[Gateway] 收到停止信号 (Windows)")
+                    loop.call_soon_threadsafe(stop_event.set)
+                
+                signal.signal(signal.SIGINT, win_signal_handler)
+                signal.signal(signal.SIGTERM, win_signal_handler)
         
         try:
             await stop_event.wait()

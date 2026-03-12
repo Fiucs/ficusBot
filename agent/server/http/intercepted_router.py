@@ -145,7 +145,8 @@ class InterceptedRouter(APIRouter):
             "method": request.method,
             "user_id": request.headers.get("X-User-ID", "anonymous"),
             "session_id": body.get("session_id", "default"),
-            "content": body.get("message", ""),
+            "content": body.get("content", body.get("message", "")),
+            "images": body.get("images", []),
             "raw": body,
         }
         
@@ -163,6 +164,7 @@ class InterceptedRouter(APIRouter):
             user_id=final_data.get("user_id", ""),
             session_id=final_data.get("session_id", ""),
             content=final_data.get("content", ""),
+            images=final_data.get("images", []),
             raw=final_data.get("raw", {}),
             request=request,
         )

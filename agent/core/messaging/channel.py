@@ -87,10 +87,8 @@ class MessageChannel:
         })
         
         has_filter = filter_func is not None
-        logger.debug(f"[MessageChannel] 订阅者注册: {name}, 有过滤器: {has_filter}, 当前订阅者总数: {len(self._subscribers)}")
-        
-        all_names = list(self._subscribers.keys())
-        logger.debug(f"[MessageChannel] 当前所有订阅者: {all_names}")
+        logger.info(f"[MessageChannel] 📋 订阅者注册: {name} | 过滤器: {'是' if has_filter else '否'} | 总数: {len(self._subscribers)}")
+        logger.debug(f"[MessageChannel] 当前所有订阅者: {list(self._subscribers.keys())}")
     
     def unsubscribe(self, name: str) -> bool:
         """
@@ -138,23 +136,16 @@ class MessageChannel:
         self._stats["published"] += 1
         start_time = time.time()
         
-        logger.debug(f"[MessageChannel] ========== 发布消息开始 ==========")
-        logger.debug(f"[MessageChannel] 消息ID: {message.id}")
-        logger.debug(f"[MessageChannel] 消息来源: {message.source.value}")
-        logger.debug(f"[MessageChannel] 消息类型: {message.type.value}")
-        logger.debug(f"[MessageChannel] 消息内容: {message.content[:100]}..." if len(message.content) > 100 else f"[MessageChannel] 消息内容: {message.content}")
-        logger.debug(f"[MessageChannel] 用户ID: {message.user_id}")
-        logger.debug(f"[MessageChannel] 会话ID: {message.session_id}")
+        logger.info(f"[MessageChannel] 📤 发布消息 | ID: {message.id} | 来源: {message.source.value} | 类型: {message.type.value}")
+        logger.info(f"[MessageChannel] 📝 内容: {message.content[:100]}..." if len(message.content) > 100 else f"[MessageChannel] 📝 内容: {message.content}")
+        logger.debug(f"[MessageChannel] 用户ID: {message.user_id} | 会话ID: {message.session_id}")
         logger.debug(f"[MessageChannel] 元数据: {message.metadata}")
         logger.debug(f"[MessageChannel] 等待响应: {wait_for_response}, 超时: {timeout}s")
-        logger.debug(f"[MessageChannel] 当前订阅者数量: {len(self._subscribers)}")
+        logger.info(f"[MessageChannel] 👥 当前订阅者: {list(self._subscribers.keys())}")
         
         matched_handlers = self._find_matched_handlers(message)
         
-        logger.debug(f"[MessageChannel] 匹配到的处理器数量: {len(matched_handlers)}")
-        if matched_handlers:
-            handler_names = [name for name, _ in matched_handlers]
-            logger.debug(f"[MessageChannel] 匹配的处理器: {handler_names}")
+        logger.info(f"[MessageChannel] 🎯 匹配到 {len(matched_handlers)} 个处理器: {[name for name, _ in matched_handlers]}")
         
         if not matched_handlers:
             logger.warning(f"[MessageChannel] 无订阅者处理消息: {message.id}")
@@ -176,11 +167,9 @@ class MessageChannel:
             response = await self._handle_multiple(matched_handlers, message, timeout)
         
         elapsed = time.time() - start_time
-        logger.debug(f"[MessageChannel] 消息处理完成，总耗时: {elapsed:.3f}s")
-        logger.debug(f"[MessageChannel] 响应成功: {response.success if response else 'None'}")
+        logger.info(f"[MessageChannel] ✅ 消息处理完成 | 耗时: {elapsed:.3f}s | 成功: {response.success if response else 'None'}")
         if response and response.error:
-            logger.debug(f"[MessageChannel] 响应错误: {response.error}")
-        logger.debug(f"[MessageChannel] ========== 发布消息结束 ==========")
+            logger.warning(f"[MessageChannel] ⚠️ 响应错误: {response.error}")
         
         return response
     
@@ -226,7 +215,7 @@ class MessageChannel:
         
         Args:
             name: 处理器名称
-            handler: 处理函数
+            handler: 处理函数或处理器对象
             message: 消息对象
             timeout: 超时时间
             
@@ -237,10 +226,16 @@ class MessageChannel:
         logger.debug(f"[MessageChannel] 开始调用处理器: {name}")
         
         try:
-            response = await asyncio.wait_for(
-                handler(message),
-                timeout=timeout
-            )
+            if hasattr(handler, 'handle'):
+                response = await asyncio.wait_for(
+                    handler.handle(message),
+                    timeout=timeout
+                )
+            else:
+                response = await asyncio.wait_for(
+                    handler(message),
+                    timeout=timeout
+                )
             self._stats["handled"] += 1
             handler_elapsed = time.time() - handler_start
             logger.debug(f"[MessageChannel] 处理器 '{name}' 执行成功，耗时: {handler_elapsed:.3f}s")
@@ -374,37 +369,24 @@ class MessageChannel:
         logger.debug(f"[MessageChannel] 同步发布消息: {message.id}")
         
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                logger.debug(f"[MessageChannel] 事件循环正在运行，使用线程池执行")
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        self._run_sync_in_thread,
-                        message,
-                        timeout
-                    )
-                    result = future.result(timeout=timeout + 5)
-                    logger.debug(f"[MessageChannel] 同步发布完成（线程池模式）")
-                    return result
-            else:
-                logger.debug(f"[MessageChannel] 使用现有事件循环执行")
-                result = loop.run_until_complete(
-                    self.publish(message, wait_for_response=True, timeout=timeout)
+            loop = asyncio.get_running_loop()
+            logger.debug(f"[MessageChannel] 事件循环正在运行，使用线程池执行")
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    self._run_sync_in_thread,
+                    message,
+                    timeout
                 )
-                logger.debug(f"[MessageChannel] 同步发布完成（事件循环模式）")
+                result = future.result(timeout=timeout + 5)
+                logger.debug(f"[MessageChannel] 同步发布完成（线程池模式）")
                 return result
         except RuntimeError:
-            logger.debug(f"[MessageChannel] 创建新事件循环执行")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result = loop.run_until_complete(
-                    self.publish(message, wait_for_response=True, timeout=timeout)
-                )
-                logger.debug(f"[MessageChannel] 同步发布完成（新事件循环模式）")
-                return result
-            finally:
-                loop.close()
+            logger.warning(f"[MessageChannel] 无运行中的事件循环，创建新事件循环执行")
+            result = asyncio.run(
+                self.publish(message, wait_for_response=True, timeout=timeout)
+            )
+            logger.warning(f"[MessageChannel] 同步发布完成（新事件循环模式）")
+            return result
     
     def _run_sync_in_thread(
         self,
@@ -422,14 +404,79 @@ class MessageChannel:
             响应对象
         """
         logger.debug(f"[MessageChannel] 在独立线程中执行同步发布")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        return asyncio.run(
+            self.publish(message, wait_for_response=True, timeout=timeout)
+        )
+    
+    async def publish_stream(
+        self,
+        message: Message,
+        timeout: float = 120.0
+    ) -> "StreamResponse":
+        """
+        流式发布消息
+        
+        返回 StreamResponse 对象，包含流式生成器。
+        调用方可从 response.generator 中逐步获取数据。
+        
+        Args:
+            message: 消息对象
+            timeout: 超时时间（秒）
+            
+        Returns:
+            StreamResponse: 流式响应包装对象
+            
+        使用示例:
+            response = await channel.publish_stream(message)
+            if response.success:
+                async for chunk in response.generator:
+                    yield chunk
+        """
+        from agent.core.messaging.message import StreamResponse
+        
+        start_time = time.time()
+        logger.info(f"[MessageChannel] 📤 发布流式消息 | ID: {message.id} | 来源: {message.source.value}")
+        logger.info(f"[MessageChannel] 📝 内容: {message.content[:100]}..." if len(message.content) > 100 else f"[MessageChannel] 📝 内容: {message.content}")
+        
+        self._stats["published"] += 1
+        
+        matched_handlers = self._find_matched_handlers(message)
+        
+        if not matched_handlers:
+            logger.warning(f"[MessageChannel] ⚠️ 没有匹配的处理器")
+            return StreamResponse.error_response(message.id, "No matched handler")
+        
+        logger.info(f"[MessageChannel] 🎯 匹配到 {len(matched_handlers)} 个处理器: {[name for name, _ in matched_handlers]}")
+        
+        name, handler = matched_handlers[0]
+        
+        if len(matched_handlers) > 1:
+            logger.warning(f"[MessageChannel] 流式模式仅使用第一个处理器: {name}")
+        
         try:
-            return loop.run_until_complete(
-                self.publish(message, wait_for_response=True, timeout=timeout)
-            )
-        finally:
-            loop.close()
+            logger.info(f"[MessageChannel] 📞 调用处理器: {name}")
+            
+            if hasattr(handler, 'handle_stream'):
+                response = await asyncio.wait_for(
+                    handler.handle_stream(message),
+                    timeout=timeout
+                )
+            else:
+                raise AttributeError(f"Handler '{name}' does not support stream mode (no handle_stream method)")
+            
+            elapsed = time.time() - start_time
+            logger.info(f"[MessageChannel] ✅ 流式处理器初始化完成 | 耗时: {elapsed:.3f}s")
+            
+            return response
+            
+        except asyncio.TimeoutError:
+            elapsed = time.time() - start_time
+            logger.error(f"[MessageChannel] ⏱️ 流式处理超时 | 耗时: {elapsed:.3f}s")
+            return StreamResponse.error_response(message.id, f"Timeout after {timeout}s")
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"[MessageChannel] ❌ 流式处理异常 | 耗时: {elapsed:.3f}s | 错误: {e}")
+            return StreamResponse.error_response(message.id, str(e))
     
     @property
     def stats(self) -> Dict[str, int]:

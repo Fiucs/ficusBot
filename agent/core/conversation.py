@@ -14,7 +14,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 from colorama import Fore, Style
 from loguru import logger
@@ -87,6 +87,7 @@ class ConversationManager:
         """
         self._lock = threading.RLock()
         self.history: List[Dict[str, str]] = []
+        self._working_messages: List[Dict[str, Any]] = []
         self.max_rounds = GLOBAL_CONFIG.get("conversation.max_history_rounds", 10)
         self.custom_system_prompt: Optional[str] = None
         self._base_system_prompt: str = ""
@@ -273,32 +274,49 @@ class ConversationManager:
 
    
 
-    def add_message(self, role: str, content: str, tool_calls: List[Dict] = None):
+    def add_message(self, role: str, content: str, tool_calls: List[Dict] = None, images: List[str] = None):
         """
-        添加对话消息到历史记录（线程安全）。
+        添加对话消息到临时工作区（线程安全）。
+        
+        注意: 消息添加到 _working_messages ，而不是 history。
+        只有在任务完成时调用 finalize_conversation 才会保存到 history。
         
         Args:
             role: 消息角色（user/assistant/system/tool）
             content: 消息内容
             tool_calls: 工具调用列表（可选）
+            images: 图片列表（可选），每项为 URL 或 base64 字符串
         """
         with self._lock:
-            # 过滤空的 assistant 消息（无内容且无工具调用）
             if role == "assistant":
                 if (not content or content.strip() == "") and not tool_calls:
                     logger.debug(f"[add_message] 跳过空的 assistant 消息")
                     return
             
-            message = {"role": role, "content": content or ""}
+            if images and role == "user":
+                from agent.utils import compress_images
+                compressed_images = compress_images(images)
+                multimodal_content = [{"type": "text", "text": content or ""}]
+                for img in compressed_images:
+                    logger.info(f"[add_message] 📷 添加图片: {img[:30]}...")
+                    multimodal_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": img}
+                    })
+                message = {"role": role, "content": multimodal_content}
+                logger.info(f"[add_message] 📷 多模态消息: {len(multimodal_content)} 个内容块")
+            else:
+                message = {"role": role, "content": content or ""}
+            
             if tool_calls:
                 message["tool_calls"] = tool_calls
-            self.history.append(message)
-            if len(self.history) > self.max_rounds * 2:
-                self.history = self.history[-self.max_rounds * 2:]
+            self._working_messages.append(message)
 
     def add_tool_result(self, tool_call_id: str, tool_name: str, content: str):
         """
-        添加工具执行结果到对话历史（线程安全）。
+        添加工具执行结果到临时工作区（线程安全）。
+        
+        注意: 消息添加到 _working_messages，而不是 history。
         
         Args:
             tool_call_id: 工具调用ID
@@ -306,7 +324,7 @@ class ConversationManager:
             content: 执行结果内容
         """
         with self._lock:
-            self.history.append({
+            self._working_messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
                 "name": tool_name,
@@ -317,11 +335,135 @@ class ConversationManager:
         """
         获取完整对话消息列表（包含system prompt，线程安全）。
         
+        消息组成: system_prompt + history + _working_messages
+        
         Returns:
             List[Dict]: 完整消息列表
         """
         with self._lock:
-            return [{"role": "system", "content": self.system_prompt}] + self.history.copy()
+            return [{"role": "system", "content": self.system_prompt}] \
+                   + self.history.copy() \
+                   + self._working_messages.copy()
+    
+    def finalize_conversation(self, save_user_message: bool = True) -> bool:
+        """
+        完成对话，从临时工作区提取并保存到历史（线程安全）。
+        
+        流程:
+            1. 如果 save_user_message=True，从 _working_messages 中提取第一个 user 消息
+            2. 从 _working_messages 中提取最后一个 assistant 消息（最终回答）
+            3. 将消息添加到 history
+            4. 清空临时工作区 _working_messages
+            5. 清理动态注入的技能文档和记忆
+            6. 恢复基础 system prompt
+            7. 限制历史长度
+        
+        Args:
+            save_user_message: 是否保存用户消息到历史（任务拆解模式下应为 False）
+        
+        Returns:
+            bool: 操作是否成功
+        """
+        with self._lock:
+            try:
+                user_content = None
+                assistant_content = None
+                
+                for msg in self._working_messages:
+                    if msg.get("role") == "user" and user_content is None:
+                        user_content = msg.get("content", "")
+                    if msg.get("role") == "assistant":
+                        content = msg.get("content", "")
+                        if content and content.strip():
+                            assistant_content = content
+                
+                if save_user_message:
+                    if not user_content:
+                        logger.warning("[对话完成] 未找到用户消息，跳过保存")
+                        self._working_messages.clear()
+                        self._clear_dynamic_injections()
+                        return False
+                    
+                    self.history.append({"role": "user", "content": user_content})
+                
+                if not assistant_content:
+                    logger.warning("[对话完成] 未找到有效的助手回答，跳过保存")
+                    self._working_messages.clear()
+                    self._clear_dynamic_injections()
+                    return False
+                
+                self.history.append({"role": "assistant", "content": assistant_content})
+                
+                if len(self.history) > self.max_rounds * 2:
+                    self.history = self.history[-self.max_rounds * 2:]
+                
+                working_count = len(self._working_messages)
+                self._working_messages.clear()
+                self._clear_dynamic_injections()
+                
+                if save_user_message:
+                    logger.info(f"[对话完成] 用户消息和最终回答已保存到历史，历史消息数: {len(self.history)}，清理临时消息: {working_count}")
+                else:
+                    logger.info(f"[对话完成] 最终回答已保存到历史，历史消息数: {len(self.history)}，清理临时消息: {working_count}")
+                return True
+            except Exception as e:
+                logger.error(f"[对话完成] 保存失败: {e}")
+                return False
+    
+    def cancel_conversation(self) -> bool:
+        """
+        取消当前对话，清空临时工作区和动态注入内容（线程安全）。
+        
+        用于异常情况或达到最大工具调用轮数时调用。
+        
+        Returns:
+            bool: 操作是否成功
+        """
+        with self._lock:
+            try:
+                working_count = len(self._working_messages)
+                self._working_messages.clear()
+                self._clear_dynamic_injections()
+                logger.info(f"[对话取消] 已清空临时工作区，移除 {working_count} 条消息")
+                return True
+            except Exception as e:
+                logger.error(f"[对话取消] 清空失败: {e}")
+                return False
+    
+    def _clear_dynamic_injections(self):
+        """
+        清理动态注入的内容（内部方法，需在锁内调用）。
+        
+        清理内容:
+            - _injected_skills: 已注入的技能名称集合
+            - _injected_memories: 已注入的记忆列表
+            - system_prompt: 恢复为基础 system prompt
+        """
+        try:
+            if self._injected_skills:
+                logger.info(f"[清理动态注入] 清理技能文档: {self._injected_skills}")
+                self._injected_skills.clear()
+            
+            if self._injected_memories:
+                logger.info(f"[清理动态注入] 清理记忆: {len(self._injected_memories)} 条")
+                self._injected_memories.clear()
+            
+            self.system_prompt = self._base_system_prompt
+            memory_placeholder = "{INJECTED_MEMORY_LIST}"
+            if memory_placeholder in self.system_prompt:
+                self.system_prompt = self.system_prompt.replace(memory_placeholder, "_暂无已保存的记忆_")
+        except Exception as e:
+            logger.error(f"[清理动态注入] 失败: {e}")
+    
+    def get_working_messages_count(self) -> int:
+        """
+        获取临时工作区消息数量（线程安全）。
+        
+        Returns:
+            int: 临时工作区消息数量
+        """
+        with self._lock:
+            return len(self._working_messages)
 
     def inject_skill_document(self, skill_name: str, skill_doc: str) -> bool:
         """
@@ -563,6 +705,35 @@ class ConversationManager:
         with self._lock:
             return self._injected_skills.copy()
 
+    def inject_tool_list(self, tool_list_str: str) -> bool:
+        """
+        将常驻工具列表注入到 system prompt 的指定位置（{INJECTED_TOOL_LIST} 占位符处）。
+        
+        注入逻辑:
+            1. 替换 {INJECTED_TOOL_LIST} 占位符
+            2. 更新 _base_system_prompt 和 system_prompt
+        
+        Args:
+            tool_list_str: 格式化的工具列表字符串
+            
+        Returns:
+            bool: 注入是否成功
+        """
+        with self._lock:
+            try:
+                placeholder = "{INJECTED_TOOL_LIST}"
+                if placeholder in self._base_system_prompt:
+                    self._base_system_prompt = self._base_system_prompt.replace(placeholder, tool_list_str)
+                    self.system_prompt = self._base_system_prompt
+                    logger.info(f"[工具列表注入] 成功注入工具列表到 system prompt")
+                    return True
+                else:
+                    logger.warning("[工具列表注入] 未找到 {INJECTED_TOOL_LIST} 占位符")
+                    return False
+            except Exception as e:
+                logger.error(f"[工具列表注入] 失败: {str(e)}")
+                return False
+
     def inject_skill_list(self, skill_list_str: str) -> bool:
         """
         将技能列表注入到 system prompt 的指定位置（{{INJECTED_SKILLS_LIST}} 占位符处）。
@@ -625,6 +796,8 @@ class ConversationManager:
     def save(self) -> bool:
         """
         保存会话到存储（线程安全）。
+        
+        注意: 只保存 history（持久化历史），不保存 _working_messages（临时工作区）。
 
         Returns:
             bool: 保存是否成功
@@ -833,109 +1006,99 @@ class ConversationManager:
                 logger.error(f"[会话创建] 创建失败: {e}")
                 return ""
 
-    def cleanup_tool_messages(self) -> Dict[str, Any]:
+    def inject_task_context(self, task_context: Dict) -> bool:
         """
-        清理对话历史中的工具调用临时信息（线程安全）。
+        注入任务状态到 system prompt（放在最上方）
 
-        清理内容:
-            - 移除所有 role='tool' 的消息
-            - 移除 assistant 消息中的 tool_calls 字段
-            - 合并连续的 assistant 消息（保留最后一个有内容的）
-            - 保留 user 和 assistant 的纯文本内容
-
-        日志记录:
-            - 被清理的 tool 消息数量
-            - 被清理的 tool_calls 信息
-            - 合并的 assistant 消息信息
+        Args:
+            task_context: 任务状态字典，包含：
+                - task_goal: 任务目标
+                - total_steps: 总步骤数
+                - completed_steps: 已完成步骤数
+                - current_step: 当前步骤信息
+                - required_abilities: 所需能力列表
+                - next_step_desc: 下一步预览（可选）
 
         Returns:
-            Dict[str, Any]: 清理统计信息
-                - removed_tool_messages: 移除的 tool 消息数量
-                - cleaned_assistant_messages: 清理的 assistant 消息数量
-                - merged_assistant_messages: 合并的 assistant 消息数量
+            bool: 注入是否成功
         """
         with self._lock:
-            original_count = len(self.history)
-            removed_tool_count = 0
-            cleaned_assistant_count = 0
-            merged_assistant_count = 0
-            cleaned_tool_details = []
-            cleaned_assistant_details = []
-
-            logger.info(f"{Fore.CYAN}[工具消息清理] 开始清理，原始消息数: {original_count}{Style.RESET_ALL}")
-
-            # 第一步：移除 tool 消息，清理 assistant 消息中的 tool_calls
-            temp_history = []
-            for idx, msg in enumerate(self.history):
-                role = msg.get("role", "")
-
-                if role == "tool":
-                    removed_tool_count += 1
-                    tool_name = msg.get("name", "unknown")
-                    tool_call_id = msg.get("tool_call_id", "unknown")
-                    content_preview = (msg.get("content", ""))[:100]
-                    cleaned_tool_details.append({
-                        "index": idx,
-                        "tool_name": tool_name,
-                        "tool_call_id": tool_call_id,
-                        "content_preview": content_preview
-                    })
-                    logger.info(f"{Fore.CYAN}  移除 tool 消息 [{idx}]: {tool_name} (id: {tool_call_id}){Style.RESET_ALL}")
-                    continue
-
-                if role == "assistant" and "tool_calls" in msg:
-                    tool_calls = msg.get("tool_calls", [])
-                    if tool_calls:
-                        cleaned_assistant_count += 1
-                        tool_names = [tc.get("function", {}).get("name", "unknown") for tc in tool_calls]
-                        cleaned_assistant_details.append({
-                            "index": idx,
-                            "tool_names": tool_names
-                        })
-                        logger.info(f"{Fore.CYAN}  清理 assistant 消息 [{idx}] 的 tool_calls: {tool_names}{Style.RESET_ALL}")
-                        msg = {k: v for k, v in msg.items() if k != "tool_calls"}
-
-                temp_history.append(msg)
-
-            # 第二步：合并连续的 assistant 消息
-            # 策略：如果连续的 assistant 消息中，前面的内容为空或只有 tool_calls（已被清理），
-            # 则只保留最后一个有内容的 assistant 消息
-            new_history = []
-            pending_assistant = None
-
-            for idx, msg in enumerate(temp_history):
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-
-                if role == "assistant":
-                    if pending_assistant is not None:
-                        # 之前有未处理的 assistant，说明是连续的
-                        merged_assistant_count += 1
-                        logger.info(f"{Fore.CYAN}  合并连续的 assistant 消息，保留后一个 [{idx}]{Style.RESET_ALL}")
-                    # 暂存当前 assistant，继续看下一个
-                    pending_assistant = msg
+            try:
+                pattern = r'<task_context>.*?</task_context>\n*'
+                self.system_prompt = re.sub(pattern, '', self.system_prompt, flags=re.DOTALL)
+                
+                context_content = self._format_task_context(task_context)
+                
+                role_pos = self.system_prompt.find("<role>")
+                if role_pos != -1:
+                    self.system_prompt = context_content + "\n\n" + self.system_prompt[role_pos:]
                 else:
-                    # 遇到非 assistant 消息，先处理暂存的 assistant
-                    if pending_assistant is not None:
-                        new_history.append(pending_assistant)
-                        pending_assistant = None
-                    new_history.append(msg)
+                    self.system_prompt = context_content + "\n\n" + self.system_prompt
+                
+                logger.info(f"[任务状态注入] 成功注入任务上下文 - 进度: {task_context.get('completed_steps', 0)}/{task_context.get('total_steps', 0)}")
+                return True
+            except Exception as e:
+                logger.error(f"[任务状态注入] 失败: {e}")
+                return False
 
-            # 处理最后可能暂存的 assistant
-            if pending_assistant is not None:
-                new_history.append(pending_assistant)
+    def _format_task_context(self, task_context: Dict) -> str:
+        """
+        格式化任务上下文为可注入内容
 
-            self.history = new_history
-            final_count = len(self.history)
+        Args:
+            task_context: 任务状态字典
 
-            logger.info(f"[工具消息清理] 完成: 移除 {removed_tool_count} 条 tool 消息，清理 {cleaned_assistant_count} 条 assistant 消息的 tool_calls，合并 {merged_assistant_count} 条 assistant 消息，消息数: {original_count} -> {final_count}")
+        Returns:
+            str: 格式化后的任务上下文
+        """
+        task_goal = task_context.get("task_goal", "未知任务")
+        total_steps = task_context.get("total_steps", 0)
+        completed_steps = task_context.get("completed_steps", 0)
+        current_step = task_context.get("current_step", {})
+        required_abilities = current_step.get("required_abilities", []) if current_step else []
+        next_step_desc = task_context.get("next_step_desc", "")
 
-            return {
-                "original_count": original_count,
-                "final_count": final_count,
-                "removed_tool_messages": removed_tool_count,
-                "cleaned_assistant_messages": cleaned_assistant_count,
-                "merged_assistant_messages": merged_assistant_count,
-                "cleaned_tools": cleaned_tool_details,
-                "cleaned_assistants": cleaned_assistant_details
-            }
+        step_desc = current_step.get("step_desc", "") if current_step else ""
+        abilities_str = ", ".join(required_abilities) if required_abilities else "无"
+
+        context = f"""<task_context>
+
+## 当前任务状态
+
+**任务目标**: {task_goal}
+
+**执行进度**: {completed_steps}/{total_steps} 步骤已完成
+
+**当前步骤**: {current_step.get('step_id', 'N/A') if current_step else 'N/A'}
+- 步骤描述: {step_desc}
+- 所需能力: {abilities_str}
+
+**下一步预览**: {next_step_desc}
+
+## 执行约束（最高优先级）
+1. 必须严格按任务树顺序执行，禁止跳步、重排
+2. 只能使用 discover 匹配的工具
+3. 完成后等待系统更新状态，不要自行判断任务完成
+4. 如果工具执行失败，报告错误并等待指示
+
+</task_context>"""
+        return context
+
+    def clear_task_context(self) -> bool:
+        """
+        清理任务状态注入
+
+        Returns:
+            bool: 清理是否成功
+        """
+        with self._lock:
+            try:
+                pattern = r'<task_context>.*?</task_context>\n*'
+                self.system_prompt = re.sub(pattern, '', self.system_prompt, flags=re.DOTALL)
+                logger.info(f"[任务状态清理] 已清理任务上下文")
+                return True
+            except Exception as e:
+                logger.error(f"[任务状态清理] 失败: {e}")
+                return False
+
+

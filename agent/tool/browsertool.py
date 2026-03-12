@@ -6,19 +6,13 @@
     - 支持页面导航、元素交互、内容提取等
     - 通过 register_to_tool_adapter 与 ToolAdapter 集成
     - 支持异步操作和同步调用包装
+    - 工具合并优化：11个工具 → 4个工具
 
-核心方法:
-    - start: 启动浏览器
-    - close: 关闭浏览器
-    - navigate: 导航到指定 URL
-    - click: 点击指定索引的元素
-    - input_text: 在指定元素中输入文本
-    - scroll: 滚动页面
-    - extract: 提取页面内容
-    - screenshot: 截图
-    - send_keys: 发送按键
-    - go_back: 返回上一页
-    - get_state: 获取页面状态
+核心方法（合并优化后）:
+    - action: 交互操作（click/input/scroll/send_keys）
+    - navigate: 导航操作（navigate/back/forward）
+    - tab: 标签页管理（list/switch/close）
+    - read: 读取页面（state/extract）
 
 配置项（通过 config.json 配置）:
     - browser_headless: 无头模式，默认 True
@@ -34,9 +28,10 @@
     browser = BrowserTool()
     browser.register_to_tool_adapter(tool_adapter)
     
+    # 使用合并后的工具
     result = browser.navigate(url="https://example.com")
-    result = browser.click(index=5)
-    result = browser.input_text(index=10, text="Hello World")
+    result = browser.action(action="click", index=5)
+    result = browser.action(action="input", index=10, text="Hello World")
 """
 
 import asyncio
@@ -63,19 +58,13 @@ class BrowserTool:
         - Integrates with ToolAdapter via register_to_tool_adapter
         - Supports async operations with sync wrapper
         - Singleton pattern ensures single browser instance across sessions
+        - Tool consolidation: 11 tools → 4 tools (optimized)
     
-    Core methods:
-        - start: Start browser
-        - close: Close browser
-        - navigate: Navigate to URL
-        - click: Click element by index
-        - input_text: Input text into element
-        - scroll: Scroll page
-        - extract: Extract page content
-        - screenshot: Take screenshot
-        - send_keys: Send keyboard keys
-        - go_back: Go back to previous page
-        - get_state: Get page state
+    Core methods (consolidated):
+        - action: Interaction operations (click/input/scroll/send_keys)
+        - navigate: Navigation operations (navigate/back/forward)
+        - tab: Tab management (list/switch/close)
+        - read: Page reading (state/extract)
     
     Config options:
         - browser_headless: Headless mode, default True
@@ -95,7 +84,11 @@ class BrowserTool:
         browser = BrowserTool.get_instance()
         browser.register_to_tool_adapter(tool_adapter)
         
+        # Using consolidated tools
         result = await browser.navigate(url="https://example.com")
+        result = await browser.action(action="click", index=5)
+        result = await browser.tab(action="list")
+        result = await browser.read(action="state")
     """
     
     _instance = None
@@ -219,170 +212,10 @@ class BrowserTool:
                         logger.debug(f"[Browser] 从 tools.json 加载 {len(browser_tools)} 个工具定义")
                         return browser_tools
         except Exception as e:
-            logger.warning(f"[Browser] 加载 tools.json 失败: {e}，使用内置定义")
+            logger.warning(f"[Browser] 加载 tools.json 失败: {e}，不存在 browser_tools 字段")
         
-        return self._get_builtin_tool_definitions()
-    
-    def _get_builtin_tool_definitions(self) -> List[Dict[str, Any]]:
-        """
-        Get built-in tool definitions as fallback
-        
-        Returns:
-            List of built-in tool definitions
-        """
-        return [
-            {
-                "name": "browser.navigate",
-                "method": "navigate",
-                "description": "Navigate to URL. Open webpage. Params: url(required). Ex: browser.navigate({url:'https://example.com'})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "Target URL"}
-                    },
-                    "required": ["url"]
-                }
-            },
-            {
-                "name": "browser.click",
-                "method": "click",
-                "description": "Click element by index. Params: index(required, element index from page state). Ex: browser.click({index:5})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "index": {"type": "integer", "description": "Element index from page state"}
-                    },
-                    "required": ["index"]
-                }
-            },
-            {
-                "name": "browser.input",
-                "method": "input_text",
-                "description": "Input text into element. Params: index(required), text(required), clear(optional, default true). Ex: browser.input({index:10, text:'hello'})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "index": {"type": "integer", "description": "Element index"},
-                        "text": {"type": "string", "description": "Text to input"},
-                        "clear": {"type": "boolean", "description": "Clear input first", "default": True}
-                    },
-                    "required": ["index", "text"]
-                }
-            },
-            {
-                "name": "browser.scroll",
-                "method": "scroll",
-                "description": "Scroll page. Params: direction(optional, up/down, default down), pages(optional, default 1). Ex: browser.scroll({direction:'down', pages:1})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "direction": {"type": "string", "enum": ["up", "down"], "description": "Scroll direction", "default": "down"},
-                        "pages": {"type": "number", "description": "Number of pages to scroll", "default": 1.0}
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "browser.extract",
-                "method": "extract",
-                "description": "Extract page content as plain text. Use format='markdown' only if user explicitly needs markdown format. Ex: browser.extract({}) or browser.extract({selector:'article'})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "selector": {"type": "string", "description": "CSS selector (optional, extract full page if empty)"},
-                        "format": {"type": "string", "enum": ["text", "markdown"], "description": "Output format (default: text). Use markdown only when explicitly needed.", "default": "text"}
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "browser.send_keys",
-                "method": "send_keys",
-                "description": "Send keyboard keys. Params: keys(required). Ex: browser.send_keys({keys:'Enter'}) or browser.send_keys({keys:'Control+A'})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "keys": {"type": "string", "description": "Key sequence, e.g. Enter, Tab, Escape, Control+A"}
-                    },
-                    "required": ["keys"]
-                }
-            },
-            {
-                "name": "browser.go_back",
-                "method": "go_back",
-                "description": "Go back to previous page. No params. Ex: browser.go_back({})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "browser.get_state",
-                "method": "get_state",
-                "description": "Get page state with clickable elements. Returns URL, title, element list and page summary. Token-optimized with configurable mode.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "mode": {
-                            "type": "string", 
-                            "enum": ["interactive", "minimal", "full"], 
-                            "description": "Extraction mode: interactive(only interactive elements), minimal(essential elements only), full(all elements). Default: interactive",
-                            "default": "interactive"
-                        },
-                        "max_elements": {
-                            "type": "integer", 
-                            "description": "Max elements to return (default: 20, range: 5-50)",
-                            "default": 20
-                        },
-                        "prioritize_visible": {
-                            "type": "boolean", 
-                            "description": "Only include viewport-visible elements (default: true)",
-                            "default": True
-                        },
-                        "include_summary": {
-                            "type": "boolean", 
-                            "description": "Include page text summary (default: true)",
-                            "default": True
-                        }
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "browser.switch_tab",
-                "method": "switch_tab",
-                "description": "Switch to tab by index. Params: tab_index(required). Ex: browser.switch_tab({tab_index:1})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "tab_index": {"type": "integer", "description": "Tab index (start from 0)"}
-                    },
-                    "required": ["tab_index"]
-                }
-            },
-            {
-                "name": "browser.close_tab",
-                "method": "close_tab",
-                "description": "Close current tab. No params. Ex: browser.close_tab({})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "browser.list_tabs",
-                "method": "list_tabs",
-                "description": "List all open tabs. No params. Ex: browser.list_tabs({})",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-        ]
-    
+        return []
+
     def register_to_tool_adapter(self, tool_adapter) -> int:
         """
         将浏览器工具注册到 ToolAdapter（参考 MCPToolAdapter 实现）
@@ -1791,3 +1624,303 @@ class BrowserTool:
                 "status": "error",
                 "message": error_msg
             }
+    
+    # ==========================================
+    # 合并方法（11→4 工具优化）
+    # ==========================================
+    
+    async def action(
+        self,
+        action: str,
+        index: int = None,
+        text: str = None,
+        clear: bool = True,
+        direction: str = "down",
+        pages: float = 1.0,
+        keys: str = None
+    ) -> Dict[str, Any]:
+        """
+        执行页面交互操作（合并 click/input/scroll/send_keys）
+        
+        参数:
+            action: 操作类型 - "click"(点击)、"input"(输入)、"scroll"(滚动)、"send_keys"(按键)
+            index: 元素索引（click/input时需要）
+            text: 输入文本（input时需要）
+            clear: 是否清空输入框（input时使用），默认 True
+            direction: 滚动方向（scroll时使用），默认 "down"
+            pages: 滚动页数（scroll时使用），默认 1.0
+            keys: 按键序列（send_keys时需要）
+            
+        返回:
+            操作结果字典
+        """
+        if action == "click":
+            if index is None:
+                return {"status": "error", "message": "click 操作需要 index 参数"}
+            return await self.click(index=index)
+        
+        elif action == "input":
+            if index is None or text is None:
+                return {"status": "error", "message": "input 操作需要 index 和 text 参数"}
+            return await self.input_text(index=index, text=text, clear=clear)
+        
+        elif action == "scroll":
+            return await self.scroll(direction=direction, pages=pages)
+        
+        elif action == "send_keys":
+            if keys is None:
+                return {"status": "error", "message": "send_keys 操作需要 keys 参数"}
+            return await self.send_keys(keys=keys)
+        
+        else:
+            return {"status": "error", "message": f"未知的操作类型: {action}，支持的类型: click, input, scroll, send_keys"}
+    
+    async def navigate(
+        self,
+        url: str = None,
+        action: str = "navigate"
+    ) -> Dict[str, Any]:
+        """
+        页面导航操作（合并 navigate/back，新增 forward）
+        
+        参数:
+            url: 目标URL（navigate时需要）
+            action: 导航动作 - "navigate"(打开URL)、"back"(后退)、"forward"(前进)，默认 "navigate"
+            
+        返回:
+            操作结果字典
+        """
+        if action == "navigate":
+            if url is None:
+                return {"status": "error", "message": "navigate 操作需要 url 参数"}
+            return await self.navigate_to_url(url=url)
+        
+        elif action == "back":
+            return await self.go_back()
+        
+        elif action == "forward":
+            return await self.go_forward()
+        
+        else:
+            return {"status": "error", "message": f"未知的导航动作: {action}，支持的动作: navigate, back, forward"}
+    
+    async def navigate_to_url(self, url: str) -> Dict[str, Any]:
+        """
+        导航到指定URL（原 navigate 方法，供合并方法调用）
+        
+        参数:
+            url: 目标URL
+            
+        返回:
+            操作结果字典
+        """
+        await self._ensure_browser_started()
+        
+        if not self._browser:
+            return {"status": "error", "message": "Browser not initialized"}
+        
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        
+        url = url.strip().strip('`').strip('"').strip("'")
+        
+        from urllib.parse import urlparse, unquote
+        
+        parsed_target = urlparse(url)
+        target_domain = parsed_target.netloc
+        
+        for attempt in range(2):
+            try:
+                current_url = await self._browser.get_current_page_url()
+                current_title = await self._browser.get_current_page_title()
+                
+                current_decoded = unquote(current_url) if current_url else ""
+                target_decoded = unquote(url)
+                
+                if current_url and current_url != "about:blank":
+                    if target_decoded in current_decoded or current_decoded in target_decoded:
+                        logger.info(f"{Fore.CYAN}[Browser] Already on target page: {url}{Style.RESET_ALL}")
+                        return {
+                            "status": "success",
+                            "message": f"Already on page: {url}",
+                            "url": current_url,
+                            "title": current_title
+                        }
+                    
+                    logger.info(f"{Fore.CYAN}[Browser] Current page has content, opening new tab: {url}{Style.RESET_ALL}")
+                    try:
+                        from browser_use.browser.events import SwitchTabEvent
+                        
+                        page_targets_before = self._browser.session_manager.get_all_page_targets() if self._browser.session_manager else []
+                        
+                        new_page = await self._browser.new_page(url)
+                        if new_page:
+                            await asyncio.sleep(0.5)
+                            
+                            page_targets_after = self._browser.session_manager.get_all_page_targets() if self._browser.session_manager else []
+                            
+                            if len(page_targets_after) > len(page_targets_before):
+                                new_target = page_targets_after[-1]
+                                await self._browser.event_bus.dispatch(SwitchTabEvent(target_id=new_target.target_id))
+                                await asyncio.sleep(0.3)
+                            
+                            logger.info(f"{Fore.CYAN}[Browser] Opened in new tab{Style.RESET_ALL}")
+                    except Exception as e:
+                        logger.warning(f"{Fore.YELLOW}[Browser] new_page failed: {e}, using navigate_to{Style.RESET_ALL}")
+                        await self._browser.navigate_to(url)
+                else:
+                    logger.info(f"{Fore.CYAN}[Browser] Current page is blank, navigating in current tab: {url}{Style.RESET_ALL}")
+                    await self._browser.navigate_to(url)
+                
+                self._current_url = url
+                
+                await asyncio.sleep(1.0)
+                
+                title = await self._browser.get_current_page_title()
+                actual_url = await self._browser.get_current_page_url()
+                
+                if actual_url == "about:blank":
+                    logger.warning(f"{Fore.YELLOW}[Browser] Page still blank, retrying...{Style.RESET_ALL}")
+                    page = await self._browser.get_current_page()
+                    if page:
+                        await page.navigate(url)
+                        title = await self._browser.get_current_page_title()
+                        actual_url = await self._browser.get_current_page_url()
+                
+                logger.info(f"{Fore.GREEN}[Browser] Navigation success: {title} ({actual_url}){Style.RESET_ALL}")
+                
+                return {
+                    "status": "success",
+                    "message": f"Navigated to: {url}",
+                    "url": actual_url,
+                    "title": title
+                }
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                if any(keyword in error_str for keyword in ["keepalive", "ping timeout", "websocket", "connectionclosed", "closed", "1011", "disconnect"]):
+                    if attempt == 0:
+                        logger.warning(f"{Fore.YELLOW}[Browser] Connection lost, reconnecting...{Style.RESET_ALL}")
+                        self._browser = None
+                        self._is_started = False
+                        await self.start()
+                        continue
+                error_msg = f"Navigation failed: {str(e)}"
+                logger.error(f"{Fore.RED}[Browser] {error_msg}{Style.RESET_ALL}")
+                return {
+                    "status": "error",
+                    "message": error_msg
+                }
+        
+        return {"status": "error", "message": "Navigation failed: cannot connect to browser"}
+    
+    async def go_forward(self) -> Dict[str, Any]:
+        """
+        前进到下一页（新增功能）
+        
+        返回:
+            操作结果字典
+        """
+        await self._ensure_browser_started()
+        
+        if not self._browser:
+            return {"status": "error", "message": "浏览器未初始化"}
+        
+        try:
+            logger.info(f"{Fore.CYAN}[Browser] 正在前进到下一页...{Style.RESET_ALL}")
+            
+            page = await self._browser.get_current_page()
+            if not page:
+                return {"status": "error", "message": "无法获取当前页面"}
+            
+            await page.go_forward()
+            
+            await asyncio.sleep(0.5)
+            
+            url = await self._browser.get_current_page_url()
+            title = await self._browser.get_current_page_title()
+            
+            logger.info(f"{Fore.GREEN}[Browser] 已前进到下一页: {title}{Style.RESET_ALL}")
+            
+            return {
+                "status": "success",
+                "message": "已前进到下一页",
+                "url": url,
+                "title": title
+            }
+            
+        except Exception as e:
+            error_msg = f"前进失败: {str(e)}"
+            logger.error(f"{Fore.RED}[Browser] {error_msg}{Style.RESET_ALL}")
+            return {
+                "status": "error",
+                "message": error_msg
+            }
+    
+    async def tab(
+        self,
+        action: str,
+        tab_index: int = None
+    ) -> Dict[str, Any]:
+        """
+        标签页管理（合并 list/switch/close）
+        
+        参数:
+            action: 操作类型 - "list"(列出所有)、"switch"(切换)、"close"(关闭)
+            tab_index: 标签页索引（switch时需要）
+            
+        返回:
+            操作结果字典
+        """
+        if action == "list":
+            return await self.list_tabs()
+        
+        elif action == "switch":
+            if tab_index is None:
+                return {"status": "error", "message": "switch 操作需要 tab_index 参数"}
+            return await self.switch_tab(tab_index=tab_index)
+        
+        elif action == "close":
+            return await self.close_tab()
+        
+        else:
+            return {"status": "error", "message": f"未知的操作类型: {action}，支持的类型: list, switch, close"}
+    
+    async def read(
+        self,
+        action: str = "state",
+        mode: str = None,
+        max_elements: int = None,
+        prioritize_visible: bool = None,
+        include_summary: bool = None,
+        selector: str = None,
+        format: str = "text"
+    ) -> Dict[str, Any]:
+        """
+        读取页面信息（合并 get_state/extract）
+        
+        参数:
+            action: 读取类型 - "state"(获取页面状态)、"extract"(提取页面内容)，默认 "state"
+            mode: 提取模式（state时使用）- "interactive"/"minimal"/"full"
+            max_elements: 最大返回元素数（state时使用）
+            prioritize_visible: 仅包含可见元素（state时使用）
+            include_summary: 包含页面摘要（state时使用）
+            selector: CSS选择器（extract时使用）
+            format: 输出格式（extract时使用）- "text"/"markdown"
+            
+        返回:
+            操作结果字典
+        """
+        if action == "state":
+            return await self.get_state(
+                mode=mode,
+                max_elements=max_elements,
+                prioritize_visible=prioritize_visible,
+                include_summary=include_summary
+            )
+        
+        elif action == "extract":
+            return await self.extract(selector=selector, format=format)
+        
+        else:
+            return {"status": "error", "message": f"未知的读取类型: {action}，支持的类型: state, extract"}

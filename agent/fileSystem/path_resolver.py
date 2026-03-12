@@ -55,6 +55,9 @@ class PathResolver:
         if path.startswith("~"):
             path = os.path.expanduser(path)
 
+        # 展开环境变量（如 %USERPROFILE%, %APPDATA% 等）
+        path = os.path.expandvars(path)
+
         abs_workspace = os.path.abspath(workspace_root)
 
         # 如果是绝对路径，直接返回
