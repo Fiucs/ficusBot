@@ -43,6 +43,7 @@ from agent.core.reflection import (
 from agent.core.agent_utils import (
     _format_content_for_print,
     _extract_reasoning_content,
+    _extract_and_remove_think_tags,
     print_conversation_history,
     ToolManager,
 )
@@ -111,6 +112,10 @@ class Agent:
         self.delegation_depth = delegation_depth
         self.agent_id = agent_config.agent_id if agent_config else "default"
         
+        # 确保 Agent 专属工作目录存在
+        if agent_config:
+            agent_config.ensure_workspace_dirs()
+        
         self.file_tool = FileSystemTool(agent_config)
         self.shell_tool = ShellTool(agent_config)
         self.skill_loader = SkillLoader()
@@ -157,6 +162,8 @@ class Agent:
         AgentInitializer.init_mcp(self)
         AgentInitializer.init_browser(self)
         AgentInitializer.init_memory(self)
+        AgentInitializer._start_config_watcher(self)
+        AgentInitializer._start_tool_index_watcher(self)
         AgentInitializer.init_task_decomposition(self)
         
         # 默认启用反思机制（新架构）------------------------------------------
@@ -167,6 +174,50 @@ class Agent:
             execute={"before": False, "after": False},
             summarize={"before": False, "after": False}
         )
+
+    def reload_config_only(self):
+        """
+        轻量级配置热更新（不重新初始化工具和记忆系统）。
+        
+        功能说明:
+            - 重载全局配置
+            - 更新 Agent 配置
+            - 重载 LLM 客户端配置
+            - 热加载系统提示词
+            
+        注意:
+            此方法用于配置文件热加载，只更新配置相关的部分。
+            如需完整重载所有组件，请使用 reload() 方法。
+        """
+        GLOBAL_CONFIG.reload()
+        
+        current_model = self.llm_client.current_model_alias
+        
+        if self.agent_config:
+            from agent.config.agent_config import AgentConfig
+            agents_config = GLOBAL_CONFIG.get("agents", {})
+            agent_config_dict = agents_config.get(self.agent_id, {})
+            if agent_config_dict:
+                new_config = AgentConfig.from_dict(self.agent_id, agent_config_dict)
+                if new_config:
+                    self.agent_config = new_config
+                    if new_config.model:
+                        current_model = new_config.model
+        
+        self.llm_client.reload_config()
+        
+        if self.agent_config:
+            llm_params = self.agent_config.get_llm_params()
+            self.llm_client.apply_preset(llm_params)
+            logger.info(f"{Fore.CYAN}[Reload] LLM 参数已更新: temperature={llm_params.get('temperature')}, max_tokens={llm_params.get('max_tokens')}, timeout={llm_params.get('timeout')}{Style.RESET_ALL}")
+        
+        if current_model != self.llm_client.current_model_alias:
+            switch_result = self.llm_client.switch_model(current_model)
+            logger.info(f"{Fore.CYAN}[Reload] 模型已切换: {current_model}{Style.RESET_ALL}")
+        
+        self.conversation.reload_prompt()
+        
+        logger.info(f"{Fore.GREEN}✅ 配置已热更新{Style.RESET_ALL}")
 
     def reload(self):
         """
@@ -228,7 +279,8 @@ class Agent:
         AgentInitializer.init_mcp(self)
         AgentInitializer.init_browser(self)
         AgentInitializer.init_memory(self)
-        
+        AgentInitializer._start_config_watcher(self)
+
         # 清除核心工具名称缓存，以便重新加载
         self._core_tool_names_cache = None
         
@@ -288,6 +340,7 @@ class Agent:
         
         stages = [
             DecomposeStage(
+                agent=self,
                 task_decomposer=self.task_decomposer,
                 reflection_engine=self._reflection_engine
             ),
@@ -372,10 +425,14 @@ class Agent:
             choice = response.choices[0]
             message = choice.message
 
+            # 提取思考内容：先尝试专用字段，再从 content 中提取 <think> 标签（备用方案）
             reasoning_content = _extract_reasoning_content(message)
-            
+            content = message.content or ""
+            think_from_content, content = _extract_and_remove_think_tags(content)
+            reasoning_content = f"{reasoning_content}\n{think_from_content}" if reasoning_content and think_from_content else (think_from_content or reasoning_content)
+
             has_tool_calls = hasattr(message, "tool_calls") and message.tool_calls
-            
+
             if has_tool_calls:
                 if reasoning_content:
                     logger.debug(f"[思考过程-工具调用] 模型进行了推理思考:")
@@ -394,12 +451,12 @@ class Agent:
                     print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
 
             if not self._process_tool_calls(message):
-                self.conversation.add_message(role="assistant", content=message.content)
-                
+                self.conversation.add_message(role="assistant", content=content)
+
                 print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
                 print(f"{Fore.GREEN}🤖 回答:{Style.RESET_ALL}")
                 print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
-                print(message.content or "message.content=None")
+                print(content or "content=None")
                 print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}\n")
                 
                 response_len = len(message.content) if message.content else 0
@@ -522,35 +579,26 @@ class Agent:
                 self.conversation.add_tool_result(tool_call.id, tool_name, error_msg)
                 continue
 
-            if tool_name.startswith("skill_"):
-                skill_name = tool_name.replace("skill_", "")
-                
-                if not self.conversation.has_injected_skill(skill_name):
-                    self.tool_manager.inject_skill_document(skill_name)
-                    logger.info(f"{Fore.CYAN}技能 '{skill_name}' 文档已注入 system prompt{Style.RESET_ALL}")
-                
-                if self._last_skill_call == tool_name:
-                    self._last_skill_repeat_count += 1
-                    
-                    if self._last_skill_repeat_count >= self._max_skill_repeats:
-                        self._blocked_skills.add(tool_name)
-                        error_msg = f"错误：技能 '{skill_name}' 已被调用过，文档已在 system prompt 中。该技能工具已被临时禁用，请直接调用文档中指定的工具（如 shell_exec）来完成任务。"
-                        logger.warning(f"{Fore.RED}⚠ 检测到第 {self._last_skill_repeat_count + 1} 次重复调用技能: {tool_name}，已阻止该技能工具{Style.RESET_ALL}")
-                        self.conversation.add_tool_result(tool_call.id, tool_name, error_msg)
-                        continue
+            if tool_name == "get_skill_document":
+                skill_name = arguments.get("skill_name", "")
+                if skill_name:
+                    if not self.conversation.has_injected_skill(skill_name):
+                        self.tool_manager.inject_skill_document(skill_name)
+                        logger.info(f"{Fore.CYAN}技能 '{skill_name}' 文档已注入 system prompt{Style.RESET_ALL}")
                     else:
-                        warning_msg = f"⚠ 警告：请勿重复调用 '{tool_name}'。技能文档已注入 system prompt，请直接执行文档中的工具调用。"
-                        logger.warning(f"{Fore.YELLOW}⚠ 检测到第 {self._last_skill_repeat_count + 1} 次重复调用技能: {tool_name}，请勿再调用{Style.RESET_ALL}")
-                        self.conversation.add_tool_result(tool_call.id, tool_name, warning_msg)
-                        continue
-                else:
-                    self._last_skill_call = tool_name
-                    self._last_skill_repeat_count = 0
+                        logger.info(f"{Fore.CYAN}技能 '{skill_name}' 文档已存在，跳过注入{Style.RESET_ALL}")
 
             
             tool_start_time = time.time()
             
             tool_result = self.tool_adapter.call_tool(tool_name, arguments)
+            
+            if tool_name == "get_skill_document" and tool_result.get("status") == "success":
+                skill_name = tool_result.get("skill_name", "")
+                document = tool_result.get("document", "")
+                if skill_name and document and not self.conversation.has_injected_skill(skill_name):
+                    self.tool_manager.inject_skill_document(skill_name)
+                    logger.info(f"{Fore.CYAN}[技能注入] 已将技能 '{skill_name}' 文档注入到 system prompt{Style.RESET_ALL}")
             
             if tool_name == "search_memory" and tool_result.get("status") == "success":
                 data = tool_result.get("data", {})
@@ -627,10 +675,6 @@ class Agent:
                     logger.info(f"{Fore.CYAN}[StagePipeline] 使用反思架构执行{Style.RESET_ALL}")
                     return self._chat_with_pipeline(user_input, images, counter)
                 
-                # 否则使用原有逻辑
-                logger.info(f"{Fore.CYAN}[Legacy] 使用原有架构执行{Style.RESET_ALL}")
-                return self._chat_legacy(user_input, images, counter)
-                
             finally:
                 # 恢复原始配置
                 if reflect is not None and reflect != original_enabled:
@@ -642,14 +686,14 @@ class Agent:
         
         Args:
             user_input: 用户输入
-            images: 图片列表
+            images: 图片列表（已废弃，建议使用 attachments）
             counter: TokenCounter 实例
             
         Returns:
             dict: 执行结果
         """
         try:
-            # 保存用户消息
+            # 用户消息直接保存到 history，确保即使执行失败也能持久化
             with self.conversation._lock:
                 self.conversation.history.append({"role": "user", "content": user_input})
             if self._auto_save:
@@ -658,15 +702,27 @@ class Agent:
             # 获取能力标签
             ability_tags = []
             if self.memory_system:
-                ability_tags = self.memory_system.get_all_ability_tags() or []
-            
+                ability_tags = self.memory_system.get_all_capabilities() or []
+
             if not ability_tags:
                 ability_tags = ["llm_response", "文件读取", "文件写入", "命令执行", "网络搜索"]
             
             # 创建初始上下文
             context = StageContext(user_input=user_input)
             context.set("ability_tags", ability_tags)
+            
+            # 构建附件元信息（用于任务拆解阶段）
             if images:
+                attachments_meta = []
+                for img in images:
+                    attachments_meta.append({
+                        "type": "image",
+                        "filename": "image.jpg",
+                        "content_type": "image/jpeg",
+                        "size": len(img) if img else 0
+                    })
+                context.set("attachments", attachments_meta)
+                # 同时保存完整图片数据（用于执行阶段）
                 context.set("images", images)
             
             # 执行 Pipeline
@@ -674,7 +730,13 @@ class Agent:
             
             if result.success:
                 # 获取最终总结结果
-                summary = result.data.get("summarize_result", "任务执行完成")
+                # result.data 是 context.data，包含所有阶段的结果
+                # summarize_result 的结构是 {"summarize_result": "实际内容"}
+                summarize_data = result.data.get("summarize_result", {})
+                if isinstance(summarize_data, dict):
+                    summary = summarize_data.get("summarize_result", "任务执行完成")
+                else:
+                    summary = summarize_data if summarize_data else "任务执行完成"
                 
                 # 添加到对话历史
                 self.conversation.add_message(role="assistant", content=summary)
@@ -718,81 +780,8 @@ class Agent:
             logger.error(f"{Fore.RED}[StagePipeline] 异常: {e}{Style.RESET_ALL}")
             return counter.build_result(f"执行异常: {str(e)}")
     
-    def _chat_legacy(self, user_input: str, images: Optional[List[str]], counter: TokenCounter) -> dict:
-        """
-        使用原有架构执行对话（遗留方法）
-        
-        Args:
-            user_input: 用户输入
-            images: 图片列表
-            counter: TokenCounter 实例
-            
-        Returns:
-            dict: 执行结果
-        """
-        if not self.task_decomposer or not self.task_tree_manager or not self.heartbeat_manager:
-            logger.info(f"{Fore.YELLOW}[任务拆解] 模块未初始化，使用普通对话模式{Style.RESET_ALL}")
-            result = self._original_chat(user_input, None, images)
-            counter.add_tokens(
-                result.get("total_prompt_tokens", 0),
-                result.get("total_completion_tokens", 0)
-            )
-            
-            context_window = self.llm_client.get_context_window()
-            history_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
-            context_usage_percent = (history_tokens / context_window * 100) if context_window > 0 else 0
-            
-            result["context_window"] = context_window
-            result["context_usage_percent"] = context_usage_percent
-            
-            return result
-        
-        with self.conversation._lock:
-            self.conversation.history.append({"role": "user", "content": user_input})
-        if self._auto_save:
-            self.conversation.save()
-        logger.debug(f"[任务拆解] 用户消息已保存到历史")
-        
-        pending_task = self.task_executor.check_pending_task()
-        
-        ability_tags = []
-        if self.memory_system:
-            ability_tags = self.memory_system.get_all_ability_tags() or []
-        
-        if not ability_tags:
-            ability_tags = ["llm_response", "文件读取", "文件写入", "命令执行", "网络搜索"]
-        
-        try:
-            task_tree = self.task_decomposer.analyze_and_decompose(
-                user_task=user_input,
-                ability_tags=ability_tags,
-                pending_task=pending_task
-            )
-            
-            counter.add_tokens(
-                task_tree.get("prompt_tokens", 0),
-                task_tree.get("completion_tokens", 0)
-            )
-            
-            task_type = task_tree.get("task_type", "new_task")
-            logger.debug(f"{Fore.CYAN}[任务分析] task_type: {task_type}{Style.RESET_ALL}")
-            
-            result = self.task_executor.execute_by_task_type(task_tree, user_input, counter)
-            
-            context_window = self.llm_client.get_context_window()
-            history_tokens = self.llm_client.count_tokens(self.conversation.get_messages())
-            context_usage_percent = (history_tokens / context_window * 100) if context_window > 0 else 0
-            
-            result["context_window"] = context_window
-            result["context_usage_percent"] = context_usage_percent
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"{Fore.RED}[任务分析] 失败: {e}{Style.RESET_ALL}")
-            return counter.build_result(f"任务分析失败: {str(e)}")
-    
-    def _execute_by_task_type(self, task_tree: Dict, user_input: str, counter: TokenCounter) -> dict:
+
+    def _execute_by_task_type(self, task_tree: Dict, user_input: str, counter: TokenCounter, skip_summarize: bool = False, images: Optional[List[str]] = None) -> dict:
         """
         根据任务类型执行不同流程（供 ExecutionStage 调用）
         
@@ -800,8 +789,10 @@ class Agent:
             task_tree: 任务树字典
             user_input: 用户输入
             counter: TokenCounter 实例
+            skip_summarize: 是否跳过汇总阶段（Pipeline 模式下由 SummarizeStage 负责）
+            images: 图片列表（可选）
         
         Returns:
             执行结果字典
         """
-        return self.task_executor.execute_by_task_type(task_tree, user_input, counter)
+        return self.task_executor.execute_by_task_type(task_tree, user_input, counter, skip_summarize, images=images)

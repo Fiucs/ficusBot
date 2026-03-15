@@ -54,31 +54,31 @@ def _format_content_for_print(content, max_length: int = 100) -> str:
 def _extract_reasoning_content(message: Any) -> Optional[str]:
     """
     从大模型消息中提取推理/思考内容。
-    
+
     支持多种字段名:
         - reasoning_content: 通义千问等模型
         - thinking_content: 某些模型
         - thoughts: 某些模型
         - thinking: 块状思考内容
-    
+
     Args:
         message: 大模型返回的消息对象
-    
+
     Returns:
         Optional[str]: 提取的思考内容，无则返回 None
     """
     reasoning_content = getattr(message, 'reasoning_content', None)
     if reasoning_content:
         return reasoning_content
-    
+
     reasoning_content = getattr(message, 'thinking_content', None)
     if reasoning_content:
         return reasoning_content
-    
+
     reasoning_content = getattr(message, 'thoughts', None)
     if reasoning_content:
         return reasoning_content
-    
+
     thinking_blocks = getattr(message, 'thinking', None)
     if thinking_blocks and hasattr(thinking_blocks, '__iter__'):
         try:
@@ -88,8 +88,47 @@ def _extract_reasoning_content(message: Any) -> Optional[str]:
             ])
         except Exception:
             pass
-    
+
     return None
+
+
+def _extract_and_remove_think_tags(content: str) -> tuple[Optional[str], str]:
+    """
+    从 content 中提取 <think> 标签内容，并返回清理后的 content。
+
+    用于处理某些模型（如 Qwen3）将思考内容放在 <think>...</think> 标签中的情况。
+
+    Args:
+        content: 原始内容字符串
+
+    Returns:
+        tuple: (思考内容, 清理后的内容)
+        - 思考内容: 提取的 <think> 标签内内容，无则返回 None
+        - 清理后的内容: 移除了 <think> 标签后的内容
+
+    Example:
+        >>> content = "<think>这是思考</think>这是回答"
+        >>> think, clean = _extract_and_remove_think_tags(content)
+        >>> print(think)  # "这是思考"
+        >>> print(clean)  # "这是回答"
+    """
+    import re
+
+    if not content:
+        return None, content
+
+    # 匹配 <think> 标签内容（支持多行，非贪婪匹配）
+    pattern = r'<think>(.*?)</think>'
+    matches = re.findall(pattern, content, re.DOTALL)
+
+    if matches:
+        # 提取所有 think 内容并合并
+        think_content = '\n'.join(match.strip() for match in matches)
+        # 移除所有 <think>...</think> 标签
+        clean_content = re.sub(pattern, '', content, flags=re.DOTALL).strip()
+        return think_content, clean_content
+
+    return None, content
 
 
 def print_conversation_history(messages: list, max_content_length: int = 100, print_last_only: bool = False):

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING, Set
 from colorama import Fore, Style
 from loguru import logger
 
+from agent.core.agent_utils import _extract_and_remove_think_tags, _extract_reasoning_content
 from agent.core.token_counter import TokenCounter
 
 if TYPE_CHECKING:
@@ -186,7 +187,7 @@ class TaskExecutor:
         
         return str(result)[:max_length]
 
-    def execute_by_task_type(self, task_tree: Dict, user_input: str, counter: TokenCounter) -> dict:
+    def execute_by_task_type(self, task_tree: Dict, user_input: str, counter: TokenCounter, skip_summarize: bool = False, images: Optional[List[str]] = None) -> dict:
         """
         根据 task_type 执行不同流程
         
@@ -194,6 +195,8 @@ class TaskExecutor:
             task_tree: 任务树字典（包含 prompt_tokens 和 completion_tokens）
             user_input: 用户输入
             counter: TokenCounter 实例
+            skip_summarize: 是否跳过汇总阶段（Pipeline 模式下由 SummarizeStage 负责）
+            images: 图片列表（可选）
         
         Returns:
             执行结果字典
@@ -201,16 +204,17 @@ class TaskExecutor:
         task_type = task_tree.get("task_type", "new_task")
         
         if task_type == "continue":
-            return self.resume_task(counter)
+            return self.resume_task(counter, skip_summarize)
         
-        return self.execute_task_tree(task_tree, user_input, counter)
+        return self.execute_task_tree(task_tree, user_input, counter, skip_summarize, images=images)
 
-    def resume_task(self, counter: TokenCounter) -> dict:
+    def resume_task(self, counter: TokenCounter, skip_summarize: bool = False) -> dict:
         """
         继续执行未完成任务
         
         Args:
             counter: TokenCounter 实例
+            skip_summarize: 是否跳过汇总阶段
         
         Returns:
             执行结果字典
@@ -230,9 +234,9 @@ class TaskExecutor:
         
         logger.info(f"{Fore.CYAN}[断点续跑] 恢复任务: {task_id}{Style.RESET_ALL}")
         
-        return self.execute_task_with_tree(task_tree, task_id, counter)
+        return self.execute_task_with_tree(task_tree, task_id, counter, skip_summarize)
 
-    def execute_task_tree(self, task_tree: Dict, user_input: str, counter: TokenCounter) -> dict:
+    def execute_task_tree(self, task_tree: Dict, user_input: str, counter: TokenCounter, skip_summarize: bool = False, images: Optional[List[str]] = None) -> dict:
         """
         执行任务树（新任务）
         
@@ -242,6 +246,8 @@ class TaskExecutor:
             task_tree: 任务树字典（包含 prompt_tokens 和 completion_tokens）
             user_input: 用户输入
             counter: TokenCounter 实例
+            skip_summarize: 是否跳过汇总阶段
+            images: 图片列表（可选）
         
         Returns:
             执行结果字典
@@ -253,7 +259,7 @@ class TaskExecutor:
         
         if not self.agent.task_tree_manager or not self.agent.heartbeat_manager:
             logger.warning(f"{Fore.YELLOW}[任务执行] 任务拆解模块未初始化，回退到普通对话{Style.RESET_ALL}")
-            result = self.agent._original_chat(user_input)
+            result = self.agent._original_chat(user_input, images=images)
             counter.add_tokens(
                 result.get("total_prompt_tokens", 0),
                 result.get("total_completion_tokens", 0)
@@ -274,9 +280,9 @@ class TaskExecutor:
         
         logger.info(f"{Fore.CYAN}[任务执行] 创建新任务: {task_id}{Style.RESET_ALL}")
         
-        return self.execute_task_with_tree(task_tree, task_id, counter)
+        return self.execute_task_with_tree(task_tree, task_id, counter, skip_summarize, images=images)
 
-    def execute_task_with_tree(self, task_tree: Dict, task_id: str, counter: TokenCounter) -> dict:
+    def execute_task_with_tree(self, task_tree: Dict, task_id: str, counter: TokenCounter, skip_summarize: bool = False, images: Optional[List[str]] = None) -> dict:
         """
         执行任务树（核心执行逻辑）
         
@@ -284,6 +290,8 @@ class TaskExecutor:
             task_tree: 任务树字典
             task_id: 任务 ID
             counter: TokenCounter 实例
+            skip_summarize: 是否跳过汇总阶段（Pipeline 模式下由 SummarizeStage 负责）
+            images: 图片列表（可选，仅在第一个步骤时使用）
         
         Returns:
             执行结果字典
@@ -326,16 +334,22 @@ class TaskExecutor:
             self.agent.heartbeat_manager.start_step(step_id)
             
             tools = self.prepare_tools_for_ability_match(required_abilities)
-            
             step_index = len(completed_steps) + 1
             previous_results = self.format_previous_results(task_id, set(completed_steps))
+            
+            # 只在第一个步骤且从未执行过时传递图片
+            # 检查心跳中是否有任何步骤记录（包括失败的）
+            started_steps = heartbeat.get("started_steps", [])
+            is_first_step_ever = step_index == 1 and len(started_steps) == 0
+            step_images = images if is_first_step_ever else None
             
             step_result = self.execute_step_with_tools(
                 current_step, 
                 tools, 
                 task_tree,
                 step_index,
-                previous_results
+                previous_results,
+                images=step_images
             )
             
             counter.add_tokens(
@@ -374,6 +388,16 @@ class TaskExecutor:
         final_status = task_tree.get("status", "unknown") if task_tree else "unknown"
         
         if final_status in ["completed", "partial_completed"]:
+            if skip_summarize:
+                logger.info(f"{Fore.CYAN}[任务执行] Pipeline 模式，跳过汇总，返回 task_id: {task_id}{Style.RESET_ALL}")
+                return counter.build_result_with_task_id(
+                    content="",
+                    task_id=task_id,
+                    final_status=final_status,
+                    total_prompt_tokens=counter.total_prompt_tokens,
+                    total_completion_tokens=counter.total_completion_tokens
+                )
+            
             self.agent.heartbeat_manager.clear()
             
             summary_result = self.summarize_task_results(task_id, task_tree, counter)
@@ -381,17 +405,17 @@ class TaskExecutor:
             if final_status == "partial_completed":
                 failed_steps = [s for s in task_tree.get("task_tree", []) if s.get("status") == "failed"]
                 failed_info = "\n".join([f"- {s.get('step_id')}: {s.get('error_message', '未知错误')}" for s in failed_steps])
-                summary_result["content"] = f"{summary_result.get('content', '')}\n\n⚠️ 部分步骤执行失败:\n{failed_info}"
+                summary_result["content"] = f"{summary_result.get('content', '')}\n\n⚠️ [执行]部分步骤执行失败:\n{failed_info}"
             
-            self.agent.conversation.add_message(role="assistant", content=summary_result.get("content", ""))
-            self.agent.conversation.finalize_conversation(save_user_message=False)
+            self.agent.conversation.history.append({"role": "assistant", "content": summary_result.get("content", "")})
+            logger.info(f"{Fore.CYAN}[Legacy模式] assistant 消息已直接保存到 history{Style.RESET_ALL}")
             
             if self.agent._auto_save:
                 self.agent.conversation.save()
             
             return summary_result
         else:
-            self.agent.conversation.cancel_conversation()
+            logger.warning(f"{Fore.YELLOW}[任务执行] 任务执行中断，状态: {final_status}，用户消息已保存{Style.RESET_ALL}")
             return counter.build_result(f"任务执行中断，状态: {final_status}")
 
     def summarize_task_results(self, task_id: str, task_tree: Dict, counter: TokenCounter) -> dict:
@@ -449,7 +473,7 @@ class TaskExecutor:
             - 如果用户要求简短回复，请简洁回答
             - 如果用户要求详细报告，请详细说明
             - 如果用户要求总结，请给出总结
-            - 如果用户没有特别要求，用自然友好的语气告诉用户你完成了什么
+            - 如果用户没有特别要求，用自然友好的语气总结
             
             直接回复用户，不要解释你的回复方式。"""
         
@@ -467,8 +491,22 @@ class TaskExecutor:
                 messages=[{"role": "user", "content": summary_prompt}],
                 stream=False)
                 counter.add_usage(response)
-            
-                summary_content = response.choices[0].message.content or ""
+
+                # 提取思考内容：先尝试专用字段，再从 content 中提取 <think> 标签（备用方案）
+                message = response.choices[0].message
+                reasoning_content = _extract_reasoning_content(message)
+                summary_content = message.content or ""
+                think_from_content, summary_content = _extract_and_remove_think_tags(summary_content)
+                reasoning_content = f"{reasoning_content}\n{think_from_content}" if reasoning_content and think_from_content else (think_from_content or reasoning_content)
+
+                # 打印思考内容（如果有）
+                if reasoning_content:
+                    logger.debug(f"[思考过程-任务汇总] 模型进行了推理思考:")
+                    print(f"\n{Fore.CYAN}{'='*60}")
+                    print(f"🧠 思考过程 (任务汇总阶段):")
+                    print(f"{'='*60}{Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}{reasoning_content}{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
             else:
                 summary_content = re.sub(r'^\[step_\d+\]\s*', '', all_results[0] or "")
                 
@@ -497,46 +535,47 @@ class TaskExecutor:
         core_tools = self.agent.tool_manager.get_core_tools()
         logger.debug(f"[工具准备] _get_core_tools 返回 {len(core_tools)} 个工具, memory_system={self.agent.memory_system is not None}")
         
-        if self.agent.memory_system:
-            for ability in required_abilities:
-                if ability not in ["llm_response", "continue"]:
-                    logger.info(f"[工具准备] 为能力 '{ability}' 调用 discover 搜索工具")
-                    discover_result = self.agent.tool_adapter.call_tool("discover", {
-                        "query": ability,
-                        "resource_type": "tool"
-                    })
-                    logger.debug(f"[工具准备] discover 返回: status={discover_result.get('status')}")
+        # if self.agent.memory_system:
+        #     for ability in required_abilities:
+        #         if ability not in ["llm_response", "continue"]:
+        #             logger.info(f"[工具准备] 为能力 '{ability}' 调用 discover 搜索工具")
+        #             discover_result = self.agent.tool_adapter.call_tool("discover", {
+        #                 "query": ability,
+        #                 "resource_type": "tool"
+        #             })
+        #             logger.debug(f"[预工具准备] discover 返回: status={discover_result.get('status')}")
                     
-                    if discover_result.get("status") == "success":
-                        tools = discover_result.get("data", {}).get("tools", [])
-                        # 处理工具名称：优先从 function.name 获取，否则从 name 获取
-                        tool_names = []
-                        for t in tools:
-                            func_def = t.get("function", t)
-                            name = func_def.get("name") if isinstance(func_def, dict) else t.get("name")
-                            tool_names.append(name)
-                        logger.debug(f"[工具准备] discover 找到 {len(tools)} 个工具: {tool_names}")
-                        for tool in tools:
-                            # 处理工具名称：优先从 function.name 获取，否则从 name 获取
-                            func_def = tool.get("function", tool)
-                            tool_name = func_def.get("name") if isinstance(func_def, dict) else tool.get("name")
-                            if tool_name and tool_name not in [t["function"]["name"] for t in core_tools]:
-                                if tool_name in self.agent.tool_adapter.tools:
-                                    tool_info = self.agent.tool_adapter.tools[tool_name]
-                                    core_tools.append({
-                                        "type": "function",
-                                        "function": {
-                                            "name": tool_name,
-                                            "description": tool_info.get("description", ""),
-                                            "parameters": tool_info.get("parameters", {})
-                                        }
-                                    })
-                                    logger.info(f"[工具准备] 已添加工具: {tool_name}")
+        #             if discover_result.get("status") == "success":
+        #                 tools = discover_result.get("data", {}).get("tools", [])
+        #                 # 处理工具名称：优先从 function.name 获取，否则从 name 获取
+        #                 tool_names = []
+        #                 for t in tools:
+        #                     func_def = t.get("function", t)
+        #                     name = func_def.get("name") if isinstance(func_def, dict) else t.get("name")
+        #                     tool_names.append(name)
+        #                 logger.debug(f"[工具准备] discover 找到 {len(tools)} 个工具: {tool_names}")
+        #                 for tool in tools:
+        #                     # 处理工具名称：优先从 function.name 获取，否则从 name 获取
+        #                     func_def = tool.get("function", tool)
+        #                     tool_name = func_def.get("name") if isinstance(func_def, dict) else tool.get("name")
+        #                     if tool_name and tool_name not in [t["function"]["name"] for t in core_tools]:
+        #                         if tool_name in self.agent.tool_adapter.tools:
+        #                             tool_info = self.agent.tool_adapter.tools[tool_name]
+        #                             core_tools.append({
+        #                                 "type": "function",
+        #                                 "function": {
+        #                                     "name": tool_name,
+        #                                     "description": tool_info.get("description", ""),
+        #                                     "parameters": tool_info.get("parameters", {})
+        #                                 }
+        #                             })
+        #                             logger.info(f"[工具准备] 已添加工具: {tool_name}")
                                     
-                                    if tool_name.startswith("skill_"):
-                                        skill_name = tool_name[6:]
-                                        if not self.agent.conversation.has_injected_skill(skill_name):
-                                            self.agent.tool_manager.inject_skill_document(skill_name)
+        #                             if tool_name.startswith("skill_"):
+        #                                 skill_name = tool_name[6:]
+        #                                 if not self.agent.conversation.has_injected_skill(skill_name):
+        #                                     self.agent.tool_manager.inject_skill_document(skill_name)
+        
         
         logger.debug(f"[工具准备] 最终返回 {len(core_tools)} 个工具")
         return core_tools
@@ -547,7 +586,8 @@ class TaskExecutor:
         tools: List[Dict], 
         task_tree: Dict,
         step_index: int = 1,
-        previous_results: str = ""
+        previous_results: str = "",
+        images: Optional[List[str]] = None
     ) -> dict:
         """
         执行需要工具的步骤
@@ -558,6 +598,7 @@ class TaskExecutor:
             task_tree: 任务树
             step_index: 当前步骤序号（从1开始）
             previous_results: 前置结果摘要
+            images: 图片列表（可选，仅在第一个步骤时传递）
         
         Returns:
             执行结果字典，包含 success, content, prompt_tokens, completion_tokens 等
@@ -566,19 +607,23 @@ class TaskExecutor:
         step_id = current_step.get("step_id", "unknown")
         total_steps = task_tree.get("total_steps", 0)
         task_goal = task_tree.get("task_goal", "")
+        # 获取能力标签
+        abilities = current_step.get("required_abilities", [])
         
+            
         # 前置结果为空时显示引导语
         previous_results_display = previous_results if previous_results else ""
         
         step_prompt = f"""【总体目标】{task_goal}
 【当前步骤】{step_id}（第{step_index}/{total_steps}步）
 【本步任务】{step_desc}
+【建议能力标签】{abilities}
 
 ⚠️ 重要规则：
 1. 你只需要执行【本步任务】，不要执行后续步骤
-2. 直接输出回答内容，不要添加"思考："、"推理："等前缀
-3. 当本步任务完成后，在回答末尾添加 [STEP_DONE] 标记
-4. 如果任务无法完成或遇到错误，说明原因并添加 [STEP_FAILED] 标记
+2. 根据【本步任务】，判断是否需要调用工具，调用工具可参考【建议能力标签】和自己认为需要的工具关键词
+3. 不要添加"思考："、"推理："等前缀
+4. 当本步任务完成后，在回答末尾添加 [STEP_DONE] 标记
 5. 输出的内容content必须有值，否则系统会崩溃
 
 【前置结果】{previous_results_display}"""
@@ -586,14 +631,18 @@ class TaskExecutor:
         print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}📍 开始执行步骤: {step_id}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}📝 步骤描述: {step_desc[:100]}{'...' if len(step_desc) > 100 else ''}{Style.RESET_ALL}")
+        if images:
+            print(f"{Fore.CYAN}📷 图片数量: {len(images)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
         
-        self.agent.conversation.add_message(role="user", content=step_prompt)
+        self.agent.conversation.add_message(role="user", content=step_prompt, images=images)
         
         current_tool_calls = 0
         max_step_tool_calls = self.agent.max_tool_calls
         counter = TokenCounter()
         has_called_tool = False
+        empty_response_count = 0
+        max_empty_responses = 3
         
         while current_tool_calls < max_step_tool_calls:
             current_tool_calls += 1
@@ -632,17 +681,22 @@ class TaskExecutor:
                 
                 counter.add_usage(response)
                 
-                from agent.core.agent_utils import _extract_reasoning_content
+
+                # 提取思考内容：先尝试专用字段，再从 content 中提取 <think> 标签（备用方案）
                 reasoning_content = _extract_reasoning_content(message)
+                content = message.content or ""
+                think_from_content, content = _extract_and_remove_think_tags(content)
+                reasoning_content = f"{reasoning_content}\n{think_from_content}" if reasoning_content and think_from_content else (think_from_content or reasoning_content)
+
+                
                 if reasoning_content:
                     print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
                     print(f"{Fore.CYAN}🧠 [{step_id}] 思考过程:{Style.RESET_ALL}")
                     print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
                     print(reasoning_content)
                     print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
-                
+
                 if not self.agent._process_tool_calls(message):
-                    content = message.content or ""
                     
                     if "[STEP_FAILED]" in content:
                         final_content = content.replace("[STEP_FAILED]", "").strip()
@@ -685,15 +739,39 @@ class TaskExecutor:
                     
                     if has_called_tool:
                         # 已经调用过工具，但模型返回空内容且没有标记完成
-                        # 可能是模型无法继续或陷入循环，直接返回错误避免死循环
-                        logger.warning(f"{Fore.YELLOW}[步骤执行] 已调用过工具但模型返回空内容，终止执行{Style.RESET_ALL}")
-                        return {
-                            "success": False,
-                            "error": "工具调用后模型返回空响应，无法继续执行任务。请检查工具执行结果或重新描述需求。",
-                            "content": content or reasoning_content or "模型返回空内容",
-                            "prompt_tokens": counter.total_prompt_tokens,
-                            "completion_tokens": counter.total_completion_tokens
-                        }
+                        # 尝试重试，给模型提示让它继续生成
+                        empty_response_count += 1
+                        
+                        if empty_response_count < max_empty_responses:
+                            retry_msg = f"⚠️ 你刚才调用了工具，但返回的内容为空。请根据工具执行结果继续完成任务，并在完成后添加 [STEP_DONE] 标记。当前是第 {empty_response_count} 次重试，最多 {max_empty_responses} 次。"
+                            logger.warning(f"{Fore.YELLOW}[步骤执行] 工具已调用但返回空内容，第 {empty_response_count}/{max_empty_responses} 次重试{Style.RESET_ALL}")
+                            
+                            self.agent.conversation.add_message(role="assistant", content=content or reasoning_content or "")
+                            self.agent.conversation.add_message(role="user", content=retry_msg)
+                            continue
+                        else:
+                            # 超过最大重试次数，使用可用内容或返回错误
+                            final_content = content or reasoning_content or ""
+                            if final_content:
+                                logger.info(f"{Fore.GREEN}[步骤执行] 达到最大重试次数，使用可用内容作为回复{Style.RESET_ALL}")
+                                return {
+                                    "success": True,
+                                    "content": final_content,
+                                    "tool_name": "",
+                                    "arguments": {},
+                                    "result": {"content": final_content},
+                                    "prompt_tokens": counter.total_prompt_tokens,
+                                    "completion_tokens": counter.total_completion_tokens
+                                }
+                            else:
+                                logger.warning(f"{Fore.YELLOW}[步骤执行] 达到最大重试次数且无可用内容，终止执行{Style.RESET_ALL}")
+                                return {
+                                    "success": False,
+                                    "error": f"工具调用后模型连续 {max_empty_responses} 次返回空响应，无法继续执行任务。请检查工具执行结果或重新描述需求。",
+                                    "content": "模型返回空内容",
+                                    "prompt_tokens": counter.total_prompt_tokens,
+                                    "completion_tokens": counter.total_completion_tokens
+                                }
                     
                     self.agent.conversation.add_message(role="assistant", content=content)
                     

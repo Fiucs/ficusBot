@@ -24,7 +24,8 @@ class UnifiedMessage:
     所有监听器必须将平台消息转换为此格式。
     
     Attributes:
-        images: 图片列表，每项为 URL 或 base64 字符串
+        images: 图片列表，每项为 URL 或 base64 字符串（已废弃，建议使用 attachments）
+        attachments: 附件列表，支持图片、文档、视频、音频等
     """
     id: Optional[str] = None
     listener: str = ""
@@ -32,6 +33,7 @@ class UnifiedMessage:
     type: str = "text"
     content: Any = ""
     images: List[str] = field(default_factory=list)
+    attachments: List[Dict[str, Any]] = field(default_factory=list)
     user_id: str = ""
     chat_id: str = ""
     thread_id: Optional[str] = None
@@ -47,6 +49,7 @@ class UnifiedMessage:
             "type": self.type,
             "content": self.content,
             "images": self.images,
+            "attachments": self.attachments,
             "user_id": self.user_id,
             "chat_id": self.chat_id,
             "thread_id": self.thread_id,
@@ -64,6 +67,7 @@ class UnifiedMessage:
             type=data.get("type", "text"),
             content=data.get("content", ""),
             images=data.get("images", []),
+            attachments=data.get("attachments", []),
             user_id=data.get("user_id", ""),
             chat_id=data.get("chat_id", ""),
             thread_id=data.get("thread_id"),

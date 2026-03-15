@@ -222,8 +222,9 @@ class Gateway:
             config["token"] = channel_config.get("token", "")
         
         elif platform == "qq":
-            config["ws_url"] = channel_config.get("ws_url", "")
-            config["access_token"] = channel_config.get("access_token", "")
+            config["appid"] = channel_config.get("appid", "")
+            config["secret"] = channel_config.get("secret", "")
+            config["image_save_dir"] = channel_config.get("image_save_dir", "")
         
         elif platform == "wecom":
             config["corp_id"] = channel_config.get("corp_id", "")
@@ -354,13 +355,21 @@ class Gateway:
         if not self._running:
             await self.start()
         
+        from agent.utils.shutdown import shutdown, register_shutdown_callback
+        
         stop_event = asyncio.Event()
+        loop = asyncio.get_event_loop()
         
         def signal_handler():
             logger.info("[Gateway] 收到停止信号")
+            shutdown("用户按下 Ctrl+C")
             stop_event.set()
         
-        loop = asyncio.get_event_loop()
+        def on_shutdown():
+            loop.call_soon_threadsafe(stop_event.set)
+        
+        register_shutdown_callback(on_shutdown)
+        
         signal_handlers = []
         
         try:
@@ -372,6 +381,7 @@ class Gateway:
             if sys.platform == 'win32':
                 def win_signal_handler(signum, frame):
                     logger.info("[Gateway] 收到停止信号 (Windows)")
+                    shutdown("用户按下 Ctrl+C")
                     loop.call_soon_threadsafe(stop_event.set)
                 
                 signal.signal(signal.SIGINT, win_signal_handler)

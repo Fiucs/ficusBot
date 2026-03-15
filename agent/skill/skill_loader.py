@@ -344,8 +344,10 @@ class SkillLoader:
         返回格式:
             - name: skill-name-1
               description: 技能描述1
+              filepath: skills/skill-name-1/SKILL.md
             - name: skill-name-2
               description: 技能描述2
+              filepath: skills/skill-name-2/SKILL.md
         
         Returns:
             str: 格式化的技能列表字符串
@@ -368,9 +370,43 @@ class SkillLoader:
         lines = []
         for skill_name, skill in unique_skills.items():
             description = skill.get("description", "无描述")
+            filepath = skill.get("skill_md_path", "")
             lines.append(f"- name: {skill_name}")
             lines.append(f"  description: {description}")
+            lines.append(f"  filepath: {filepath}")
         
         result = "\n".join(lines)
         logger.info(f"[SkillLoader] 技能列表生成完成，共 {len(unique_skills)} 个技能")
         return result
+    
+    def get_skill_document(self, skill_name: str) -> Dict[str, Any]:
+        """
+        获取技能完整文档（供 LLM 调用）。
+        
+        这是技能系统的统一入口，LLM 通过调用此方法获取技能文档，
+        文档会被注入到 system prompt 中供 LLM 参考。
+        
+        Args:
+            skill_name: 技能名称
+        
+        Returns:
+            {
+                "status": "success",
+                "skill_name": 技能名称,
+                "filepath": 技能文件路径,
+                "document": 完整文档内容,
+                "message": 提示信息
+            }
+        """
+        if skill_name not in self.skills:
+            return {"status": "error", "message": f"技能不存在：{skill_name}"}
+        
+        skill = self.skills[skill_name]
+        
+        return {
+            "status": "success",
+            "skill_name": skill["name"],
+            "filepath": skill["skill_md_path"],
+            "document": skill["full_content"],
+            "message": f"技能 '{skill_name}' 文档已获取，请阅读文档中的执行步骤并调用相应工具。"
+        }

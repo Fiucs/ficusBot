@@ -20,6 +20,7 @@ from colorama import Fore, Style
 from loguru import logger
 
 from agent.config.configloader import GLOBAL_CONFIG
+from agent.utils.system_info import get_system_info_text
 
 
 DEFAULT_PROMPT_FILE = "agents.md"
@@ -94,6 +95,10 @@ class ConversationManager:
         self.system_prompt: str = ""
         self._injected_skills: Set[str] = set()
         self._injected_memories: List[Dict[str, Any]] = []
+        
+        # 图片缓存：key=ref_id, value=base64_data
+        # history 只存 ref_id，执行时从缓存加载
+        self._image_cache: Dict[str, str] = {}
         
         self._enable_persistence = enable_persistence and GLOBAL_CONFIG.get("session.enable_persistence", True)
         self._storage: Optional['SessionStorage'] = None
@@ -214,29 +219,50 @@ class ConversationManager:
     def _build_system_prompt(self) -> str:
         """
         构建基础系统提示词（不含技能文档注入）。
-        
+
         从 workspace/prompts.md 文件读取提示词模板，支持动态配置。
         如果文件不存在或读取失败，使用内置的默认提示词。
-        
+
         Returns:
-            str: 基础系统提示词
+            str: 基础系统提示词（保留 {INJECTED_SYSTEM_INFO} 占位符）
         """
         if self.custom_system_prompt:
             return self.custom_system_prompt
-        
+
         workspace_root = GLOBAL_CONFIG.get("workspace_root", "未配置")
         allow_list = GLOBAL_CONFIG.get("file_allow_list", [])
         allow_list_str = "\n".join([f"  - {p}" for p in allow_list])
-        
+
         prompt_content = self._load_prompt_from_file()
-        
+
         if prompt_content:
             prompt_content = prompt_content.replace("{workspace_root}", workspace_root)
+            # 注意：系统信息在 get_messages() 中动态注入，这里保留占位符
             return prompt_content
         # 不存在则报错，直接结束程序
         logger.error(f"[系统提示词] 未找到 prompts.md 文件，工作区根目录: {workspace_root}")
         raise FileNotFoundError(f"prompts.md 文件不存在于 {workspace_root}")
         # return self._get_default_prompt(workspace_root)
+
+    def _inject_system_info(self, prompt_content: str) -> str:
+        """
+        注入系统信息到提示词内容中。
+
+        替换 {INJECTED_SYSTEM_INFO} 占位符为实际的系统信息（当前时间等）。
+
+        Args:
+            prompt_content: 原始提示词内容
+
+        Returns:
+            str: 注入系统信息后的提示词内容
+        """
+        try:
+            system_info = get_system_info_text()
+            prompt_content = prompt_content.replace("{INJECTED_SYSTEM_INFO}", system_info)
+            return prompt_content
+        except Exception as e:
+            logger.warning(f"[系统信息注入] 失败: {e}")
+            return prompt_content
 
     def _load_prompt_from_file(self) -> Optional[str]:
         """
@@ -281,6 +307,11 @@ class ConversationManager:
         注意: 消息添加到 _working_messages ，而不是 history。
         只有在任务完成时调用 finalize_conversation 才会保存到 history。
         
+        图片处理策略:
+            - URL 图片：直接存储 URL（不占用额外空间）
+            - Base64 图片：生成引用 ID 存入缓存，history 只存引用
+            - 这样可以避免重试时重复存储大量 base64 数据
+        
         Args:
             role: 消息角色（user/assistant/system/tool）
             content: 消息内容
@@ -295,14 +326,30 @@ class ConversationManager:
             
             if images and role == "user":
                 from agent.utils import compress_images
+                import hashlib
                 compressed_images = compress_images(images)
                 multimodal_content = [{"type": "text", "text": content or ""}]
+                
                 for img in compressed_images:
-                    logger.info(f"[add_message] 📷 添加图片: {img[:30]}...")
-                    multimodal_content.append({
-                        "type": "image_url",
-                        "image_url": {"url": img}
-                    })
+                    if img.startswith("data:"):
+                        # Base64 图片：生成引用 ID，存入缓存
+                        img_hash = hashlib.md5(img.encode()).hexdigest()[:12]
+                        ref_id = f"img_ref_{img_hash}"
+                        self._image_cache[ref_id] = img
+                        # history 只存引用
+                        multimodal_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"ref://{ref_id}"}
+                        })
+                        logger.info(f"[add_message] 📷 添加图片引用: {ref_id}")
+                    else:
+                        # URL 图片：直接存储
+                        multimodal_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": img}
+                        })
+                        logger.info(f"[add_message] 📷 添加图片 URL: {img[:50]}...")
+                
                 message = {"role": role, "content": multimodal_content}
                 logger.info(f"[add_message] 📷 多模态消息: {len(multimodal_content)} 个内容块")
             else:
@@ -334,16 +381,62 @@ class ConversationManager:
     def get_messages(self) -> List[Dict[str, str]]:
         """
         获取完整对话消息列表（包含system prompt，线程安全）。
-        
+
         消息组成: system_prompt + history + _working_messages
         
+        图片引用解析:
+            - 将 ref://img_ref_xxx 替换为实际的 base64 数据
+            - 这样 history 只存引用，发送时才加载实际数据
+
         Returns:
             List[Dict]: 完整消息列表
         """
         with self._lock:
-            return [{"role": "system", "content": self.system_prompt}] \
+            # 每次获取消息时动态注入最新系统信息
+            system_prompt_with_info = self._inject_system_info(self.system_prompt)
+            messages = [{"role": "system", "content": system_prompt_with_info}] \
                    + self.history.copy() \
                    + self._working_messages.copy()
+            
+            # 解析图片引用
+            return self._resolve_image_refs(messages)
+    
+    def _resolve_image_refs(self, messages: List[Dict]) -> List[Dict]:
+        """
+        解析消息中的图片引用，替换为实际的 base64 数据
+        
+        Args:
+            messages: 原始消息列表
+            
+        Returns:
+            处理后的消息列表
+        """
+        resolved = []
+        for msg in messages:
+            if isinstance(msg.get("content"), list):
+                new_content = []
+                for item in msg.get("content", []):
+                    if item.get("type") == "image_url":
+                        url = item.get("image_url", {}).get("url", "")
+                        if url.startswith("ref://"):
+                            # 从缓存加载图片
+                            ref_id = url[6:]  # 去掉 "ref://"
+                            if ref_id in self._image_cache:
+                                new_content.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": self._image_cache[ref_id]}
+                                })
+                            else:
+                                logger.warning(f"[图片引用] 未找到引用: {ref_id}")
+                        else:
+                            new_content.append(item)
+                    else:
+                        new_content.append(item)
+                resolved.append({"role": msg.get("role"), "content": new_content})
+            else:
+                resolved.append(msg)
+        
+        return resolved
     
     def finalize_conversation(self, save_user_message: bool = True) -> bool:
         """
@@ -369,6 +462,10 @@ class ConversationManager:
                 user_content = None
                 assistant_content = None
                 
+                # 方案2：保留工具调用结果（当前已注释，可按需启用）
+                # 注意：启用后会增加历史长度，消耗更多 token
+                # tool_messages = []
+                
                 for msg in self._working_messages:
                     if msg.get("role") == "user" and user_content is None:
                         user_content = msg.get("content", "")
@@ -376,6 +473,9 @@ class ConversationManager:
                         content = msg.get("content", "")
                         if content and content.strip():
                             assistant_content = content
+                    # 方案2：收集工具调用结果
+                    # if msg.get("role") == "tool":
+                    #     tool_messages.append(msg)
                 
                 if save_user_message:
                     if not user_content:
@@ -385,6 +485,10 @@ class ConversationManager:
                         return False
                     
                     self.history.append({"role": "user", "content": user_content})
+                
+                # 方案2：保存工具调用结果到历史
+                # for tool_msg in tool_messages:
+                #     self.history.append(tool_msg)
                 
                 if not assistant_content:
                     logger.warning("[对话完成] 未找到有效的助手回答，跳过保存")
@@ -798,6 +902,7 @@ class ConversationManager:
         保存会话到存储（线程安全）。
         
         注意: 只保存 history（持久化历史），不保存 _working_messages（临时工作区）。
+              图片缓存也会保存，避免重新下载。
 
         Returns:
             bool: 保存是否成功
@@ -813,10 +918,11 @@ class ConversationManager:
                     "history": self.history,
                     "system_prompt": self.system_prompt,
                     "base_system_prompt": self._base_system_prompt,
-                    "injected_skills": list(self._injected_skills)
+                    "injected_skills": list(self._injected_skills),
+                    "image_cache": self._image_cache
                 })
                 if success:
-                    logger.info(f"[会话保存] ID: {self._session_id}, 消息数: {history_count}, 结果: 成功")
+                    logger.info(f"[会话保存] ID: {self._session_id}, 消息数: {history_count}, 图片缓存: {len(self._image_cache)}, 结果: 成功")
                 else:
                     logger.warning(f"[会话保存] ID: {self._session_id}, 消息数: {history_count}, 结果: 失败")
                 return success
@@ -859,6 +965,11 @@ class ConversationManager:
                         self.history.append(msg)
                     
                     self._injected_skills = set(data.get("injected_skills", []))
+                    
+                    # 加载图片缓存
+                    self._image_cache = data.get("image_cache", {})
+                    if self._image_cache:
+                        logger.info(f"[会话加载] 图片缓存: {len(self._image_cache)} 张")
                     
                     # _base_system_prompt 始终使用最新代码生成的，不从存储加载
                     # 这样可以确保代码更新后，旧的会话也能使用新的 system prompt 结构
@@ -1077,7 +1188,6 @@ class ConversationManager:
 
 ## 执行约束（最高优先级）
 1. 必须严格按任务树顺序执行，禁止跳步、重排
-2. 只能使用 discover 匹配的工具
 3. 完成后等待系统更新状态，不要自行判断任务完成
 4. 如果工具执行失败，报告错误并等待指示
 

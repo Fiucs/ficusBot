@@ -36,6 +36,9 @@ from typing import Dict, List, Optional, Tuple
 from loguru import logger
 from colorama import Fore, Style
 
+from agent.core.agent_utils import _extract_reasoning_content, _extract_and_remove_think_tags
+from agent.utils.system_info import get_system_info_text
+
 
 class DecomposeError(Exception):
     """任务拆解异常"""
@@ -84,7 +87,9 @@ class TaskDecomposer:
         self, 
         user_task: str, 
         ability_tags: List[str],
-        pending_task: Optional[Dict] = None
+        pending_task: Optional[Dict] = None,
+        attachments: Optional[List[Dict]] = None,
+        conversation_history: Optional[List[Dict]] = None
     ) -> Dict:
         """
         意图判断 + 任务拆解（统一入口）
@@ -98,6 +103,9 @@ class TaskDecomposer:
                 - progress: 执行进度
                 - current_step: 当前步骤
                 - status: 任务状态
+            attachments: 附件列表（可选），每项包含 type, filename, content_type, size 等元信息
+            conversation_history: 对话历史（可选），不包含 system prompt，格式如：
+                [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
         
         Returns:
             任务树字典，包含以下字段：
@@ -119,17 +127,21 @@ class TaskDecomposer:
         """
         user_task = user_task or ""
         ability_tags = ability_tags or []
+        attachments = attachments or []
+        conversation_history = conversation_history or []
         
         total_prompt_tokens = 0
         total_completion_tokens = 0
         
         logger.info(f"{Fore.CYAN}[任务分析] 开始分析任务: {user_task[:50]}...{Style.RESET_ALL}")
         logger.debug(f"{Fore.CYAN}[任务分析] 可用能力标签: {len(ability_tags)} 个{Style.RESET_ALL}")
+        if attachments:
+            logger.info(f"{Fore.CYAN}[任务分析] � 包含附件: {len(attachments)} 个{Style.RESET_ALL}")
         
         if pending_task:
             logger.info(f"{Fore.CYAN}[任务分析] 存在未完成任务: {pending_task.get('task_goal', '')}{Style.RESET_ALL}")
         
-        messages = self._build_initial_messages(user_task, ability_tags, pending_task)
+        messages = self._build_initial_messages(user_task, ability_tags, pending_task, attachments, conversation_history)
         
         print(f"\n{Fore.CYAN}{'─'*50}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}[请求消息] 发送给 LLM 的消息:{Style.RESET_ALL}")
@@ -151,15 +163,29 @@ class TaskDecomposer:
                     total_prompt_tokens += response.usage.prompt_tokens or 0
                     total_completion_tokens += response.usage.completion_tokens or 0
                 
-                content = response.choices[0].message.content or ""
-                
+                # 提取思考内容：先尝试专用字段，再从 content 中提取 <think> 标签（备用方案）
+                message = response.choices[0].message
+                reasoning_content = _extract_reasoning_content(message)
+                content = message.content or ""
+                think_from_content, content = _extract_and_remove_think_tags(content)
+                reasoning_content = f"{reasoning_content}\n{think_from_content}" if reasoning_content and think_from_content else (think_from_content or reasoning_content)
+
                 if not content:
                     messages.append({"role": "assistant", "content": ""})
                     messages.append({"role": "user", "content": "响应内容为空，请重新输出任务树 JSON"})
                     logger.warning(f"{Fore.YELLOW}[任务分析] LLM 响应为空，重试{Style.RESET_ALL}")
                     continue
+
+                # 打印思考内容（与 agent.py 保持一致的格式）
+                if reasoning_content:
+                    logger.debug(f"[思考过程-任务拆解] 模型进行了推理思考:")
+                    print(f"\n{Fore.MAGENTA}{'='*60}")
+                    print(f"🧠 思考过程 (任务拆解阶段):")
+                    print(f"{'='*60}{Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}{reasoning_content}{Style.RESET_ALL}")
+                    print(f"{Fore.MAGENTA}{'='*60}{Style.RESET_ALL}\n")
                 
-                logger.debug(f"{Fore.CYAN}[任务分析] LLM 响应: {content[:88888]}...{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}[任务分析] LLM 响应: {content}...{Style.RESET_ALL}")
                 
                 task_tree_str = self._extract_task_tree(content)
                 if not task_tree_str:
@@ -211,7 +237,9 @@ class TaskDecomposer:
         self, 
         user_task: str, 
         ability_tags: List[str],
-        pending_task: Optional[Dict]
+        pending_task: Optional[Dict],
+        attachments: Optional[List[Dict]] = None,
+        conversation_history: Optional[List[Dict]] = None
     ) -> List[Dict]:
         """
         构建初始消息列表
@@ -220,17 +248,71 @@ class TaskDecomposer:
             user_task: 用户任务描述
             ability_tags: 能力标签列表
             pending_task: 未完成任务信息
+            attachments: 附件列表（只包含元信息，不包含 base64 内容）
+            conversation_history: 对话历史（不包含 system prompt）
         
         Returns:
             消息列表
         """
         system_prompt = self._build_system_prompt(ability_tags, pending_task)
+        user_message = self._build_user_message(user_task, attachments)
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        if conversation_history:
+            messages.extend(conversation_history)
+            logger.debug(f"[任务分析] 已添加 {len(conversation_history)} 条对话历史")
+        
+        messages.append(user_message)
+        
+        return messages
+    
+    def _build_user_message(self, user_task: str, attachments: Optional[List[Dict]] = None) -> Dict:
+        """
+        构建用户消息（只包含附件元信息，不包含实际内容）
+        
+        Args:
+            user_task: 用户任务描述
+            attachments: 附件列表（只包含元信息）
+        
+        Returns:
+            用户消息字典
+        """
         user_prompt = self._build_user_prompt(user_task)
         
-        return [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
+        if attachments:
+            # 添加附件描述到用户提示词
+            attachment_desc = "\n\n## 用户上传的附件\n"
+            for att in attachments:
+                att_type = att.get("type", "file")
+                filename = att.get("filename", "未知文件")
+                size = att.get("size", 0)
+                content_type = att.get("content_type", "")
+                
+                # 格式化大小
+                if size < 1024:
+                    size_str = f"{size}B"
+                elif size < 1024 * 1024:
+                    size_str = f"{size / 1024:.1f}KB"
+                else:
+                    size_str = f"{size / 1024 / 1024:.1f}MB"
+                
+                # 类型图标
+                type_icons = {
+                    "image": "📷",
+                    "document": "📄",
+                    "video": "🎬",
+                    "audio": "🎵",
+                    "file": "📎"
+                }
+                icon = type_icons.get(att_type, "📎")
+                
+                attachment_desc += f"- {icon} {filename} ({size_str}, {content_type})\n"
+            
+            user_prompt = user_prompt + attachment_desc
+            logger.info(f"[任务分析] 📎 附件描述已添加到用户提示词")
+        
+        return {"role": "user", "content": user_prompt}
     
     def _build_system_prompt(
         self, 
@@ -263,34 +345,74 @@ class TaskDecomposer:
         
         return f"""# 任务分析系统
 
-## 角色
-你是一个任务分析专家，负责判断用户意图并生成任务树。
 
 {status_section}
 
-## 可用能力标签列表
-以下是当前可用的能力标签，优先从中选择：
-
-{ability_tags_str}
-
-**特殊能力标签**：
-- `llm_response`: 纯 LLM 回答，不需要使用工具
-
-**标签生成规则**：
-- 优先从【可用能力标签列表】中选择匹配的标签
-- 如果列表中没有合适的标签，可以自行生成描述性标签（如："邮件发送"、"微信通知"、"API调用"）
-- 生成的标签应简洁、通用、易于理解
+## 角色
+你是一个任务分析专家，负责判断用户意图并生成任务树。
 
 ## 最高优先级规则
+0. 思考：首先分析用户意图(考虑是否和对话历史上下文有关)，整理任务顺序（如有多个子任务需排序），按最小步骤原则来划分任务
 1. 必须先输出符合规范的任务树 JSON，用 <task_tree> 标签包裹
 2. 拆解完成前，绝对禁止：
    - 提及任何工具名称
    - 调用任何工具
    - 执行任何命令
    - 输出自由文本、思考过程
-3. 每个步骤必须是单一动作的原子操作
+3. 每个步骤是一个可独立执行的能力组合，可包含多个相关能力
 4. 优先从能力标签列表中选择，无匹配时可自行生成描述性标签
-5. 步骤之间必须有明确的依赖关系
+5. 步骤之间必须有明确的依赖关系（注意依赖的是上一步的最终结果而不是工具调用的结果）
+
+## 判断原则
+1. **继续判断**：用户明确表示要继续、完成、执行未完成任务 → task_type: "continue"
+2. **新任务判断**：其他所有情况 → task_type: "new_task"
+
+## ⚠️ 意图模糊处理
+
+当用户输入**过短、模糊、多义**时（如单个词 "tab"、"Cache"、"Log"），不要猜测用户意图！
+正确做法：生成一个询问步骤，让用户澄清需求。
+
+示例：
+用户输入: "tab"
+<task_tree>
+{{
+  "task_type": "new_task",
+  "task_goal": "澄清用户意图",
+  "total_steps": 1,
+  "task_tree": [{{
+    "step_id": "step_1",
+    "step_desc": "tab是标签的意思，或者用户想操作标签相关的功能，需要让用户具体说明",
+    "dependent_on": null,
+    "required_abilities": ["llm_response"],
+    "status": "pending"
+  }}]
+}}
+</task_tree>
+
+**核心原则**：宁可询问，不要猜测！
+
+## 能力标签使用规则
+
+**标签选择优先级**：
+1. 优先从【可用能力标签列表】中选择匹配的标签
+2. 如果列表中没有合适的标签，可以自行生成描述性标签（如："邮件发送"、"微信通知"、"API调用"）
+3. 生成的标签应简洁、通用、易于理解，优先使用"动词+名词"格式
+
+**特殊能力标签**：
+- `llm_response`: 纯 LLM 回答/分析/总结，**仅当任务完全不需要外部信息时使用**
+  - ✅ 适用：解释概念、翻译、数学计算、代码编写、总结已知信息
+  - ❌ 不适用：查询实时信息、获取系统状态、读取文件、搜索网络、列举工具等
+
+## 可用能力标签列表
+以下是当前系统支持的标准能力标签（每个标签对应一个或多个具体工具）：
+
+{ability_tags_str}
+
+**使用说明**：
+- 能力标签已标准化命名，如"网络搜索"、"文件读取"、"文件写入"
+- 执行阶段会根据能力标签自动匹配到对应的具体工具
+- 如需的能力不在列表中，可自行生成标准的能力描述
+
 
 ## 任务树格式规范
 <task_tree>
@@ -303,7 +425,7 @@ class TaskDecomposer:
       "step_id": "step_1",
       "step_desc": "原子步骤描述",
       "dependent_on": null,
-      "required_abilities": ["能力标签或llm_response"],
+      "required_abilities": ["能力标签（可多个）或llm_response"],
       "status": "pending"
     }}
   ]
@@ -313,10 +435,6 @@ class TaskDecomposer:
 ## task_type 说明
 - `new_task`: 用户提出新任务（生成新任务树）
 - `continue`: 用户想继续执行未完成的任务（使用已有任务树）
-
-## 判断原则
-1. **继续判断**：用户明确表示要继续、完成、执行未完成任务 → task_type: "continue"
-2. **新任务判断**：其他所有情况 → task_type: "new_task"
 
 ## 注意事项
 - `continue` 类型不需要输出完整任务树，total_steps 可为 0，task_tree 可为空数组
@@ -328,28 +446,30 @@ class TaskDecomposer:
 **核心规则：默认合并，只有满足以下条件才拆分**
 
 ### 应该拆分的情况（满足其一）：
-1. **独立输出操作**：需要读文件，保存文件、发邮件、发微信、调用API等
+1. **有副作用的操作**：写入文件、发送邮件/微信/短信、修改数据库等
 2. **多目标输出**：需要产生多个独立结果（如：搜索A和B，分别保存）
-3. **明确的中断点**：用户明确要求分步骤执行
+3. **明确的中断点**：用户明确要求分步骤执行、需要人工确认
 
 ### 应该合并的情况（默认）：
-1. **读取+处理**：读取文件后分析/总结/处理
-2. **搜索+回答**：搜索信息后回答问题
-3. **分析+输出**：任何分析类任务（统计、检查、遍历等）
+1. **读取+处理**：读取文件后分析/总结/处理（无副作用）
+2. **搜索+总结**：搜索信息后总结回答（无副作用）
+3. **纯分析**：任何分析类任务（统计、检查、遍历等）
 4. **纯对话**：问答、解释、翻译等
+5. **连续操作**：多个连续的读取/查询/导航动作（无副作用时合并为1步）
 
 ### 判断公式：
 ```
-是否有独立的输出操作？
-├── 是 → 拆分（获取结果 → 输出操作）
+是否有副作用操作（写入/发送/修改）？
+├── 是 → 拆分（获取/处理结果 → 副作用操作）
 └── 否 → 合并为1步
 
-独立输出操作包括：
+副作用操作包括：
 - 写入文件/数据库
 - 发送邮件/微信/短信
-- 调用外部API
-- 打印/导出
-- 其他有独立意义的输出
+- 修改系统配置
+- 其他会改变外部状态的操作
+
+注意：多个连续的读取/查询/导航动作不属于副作用，应合并为1步
 ```
 
 ## 字段说明
@@ -364,64 +484,23 @@ class TaskDecomposer:
 
 ## 示例
 
-**示例 1：需要拆分（有独立输出操作）**
-用户任务：查询北京天气并保存到桌面
+**示例 1：查询外部信息（需要工具）**
+用户任务：查询北京天气
+```
+"required_abilities": ["天气查询"]
+```
 
-<task_tree>
-{{
-  "task_type": "new_task",
-  "task_goal": "查询北京天气并保存到桌面",
-  "total_steps": 2,
-  "task_tree": [
-    {{
-      "step_id": "step_1",
-      "step_desc": "查询北京今天的天气信息",
-      "dependent_on": null,
-      "required_abilities": ["天气查询"],
-      "status": "pending"
-    }},
-    {{
-      "step_id": "step_2",
-      "step_desc": "将天气结果写入桌面文件",
-      "dependent_on": "step_1",
-      "required_abilities": ["文件写入"],
-      "status": "pending"
-    }}
-  ]
-}}
-</task_tree>
-
-**示例 2：需要合并（无独立输出操作）**
-用户任务：读取桌面test.txt文件并总结内容
-
-<task_tree>
-{{
-  "task_type": "new_task",
-  "task_goal": "读取文件并总结内容告知用户",
-  "total_steps": 1,
-  "task_tree": [
-    {{
-      "step_id": "step_1",
-      "step_desc": "读取桌面test.txt文件内容并总结告知用户",
-      "dependent_on": null,
-      "required_abilities": ["文件读取", "llm_response"],
-      "status": "pending"
-    }}
-  ]
-}}
-</task_tree>
+**示例 2：纯 LLM 回答（无需工具）**
+用户任务：解释一下Python的装饰器
+```
+"required_abilities": ["llm_response"]
+```
 
 **示例 3：继续任务**
 用户任务：继续执行
-
-<task_tree>
-{{
-  "task_type": "continue",
-  "task_goal": "继续执行未完成任务",
-  "total_steps": 0,
-  "task_tree": []
-}}
-</task_tree>
+```
+"task_type": "continue"
+```
 
 **重要说明**：
 - `required_abilities` 是能力需求标签数组，不是工具名称
@@ -448,6 +527,7 @@ class TaskDecomposer:
 
 - 根目录: {self.workspace_root}
 - 操作系统: Windows
+- 当前时间：{get_system_info_text()}
 
 请根据上述任务，输出符合规范的任务树 JSON。"""
     

@@ -159,9 +159,21 @@ class ChatHandler:
         
         try:
             loop = asyncio.get_event_loop()
+            
+            # 提取图片用于执行阶段
+            images = message.images or []
+            
+            # 如果有 attachments，提取图片类型的 base64
+            if message.attachments:
+                for att in message.attachments:
+                    if isinstance(att, dict) and att.get("type") == "image":
+                        base64_data = att.get("base64") or att.get("url")
+                        if base64_data and base64_data not in images:
+                            images.append(base64_data)
+            
             result = await loop.run_in_executor(
                 None,
-                lambda: agent.chat(message.content, images=message.images)
+                lambda: agent.chat(message.content, images=images)
             )
             
             single_elapsed = time.time() - single_start

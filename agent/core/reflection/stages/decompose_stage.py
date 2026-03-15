@@ -22,24 +22,27 @@ class DecomposeStage(Stage):
     功能说明:
         - 分析用户输入的意图
         - 将复杂任务拆解为可执行的子任务树
+        - 支持对话历史上下文理解
     
     对应原有:
         TaskDecomposer.analyze_and_decompose()
     
     使用示例:
-        >>> stage = DecomposeStage(task_decomposer, reflection_engine)
+        >>> stage = DecomposeStage(agent, task_decomposer, reflection_engine)
         >>> result = stage.run(StageContext(user_input="查询天气并发送邮件"))
     """
     
-    def __init__(self, task_decomposer: Any, reflection_engine: "ReflectionEngine" = None):
+    def __init__(self, agent: Any, task_decomposer: Any, reflection_engine: "ReflectionEngine" = None):
         """
         初始化 DecomposeStage
         
         Args:
+            agent: Agent 实例，用于获取对话历史
             task_decomposer: 任务拆解器实例
             reflection_engine: 反思引擎实例（可选）
         """
         super().__init__("decompose", reflection_engine)
+        self.agent = agent
         self.task_decomposer = task_decomposer
     
     def execute(self, context: StageContext) -> StageResult:
@@ -70,18 +73,28 @@ class DecomposeStage(Stage):
             # 从上下文中获取可选参数
             ability_tags = context.get("ability_tags", [])
             pending_task = context.get("pending_task")
+            attachments = context.get("attachments")
+            
+            # 从 agent 获取对话历史
+            conversation_history = None
+            if self.agent and hasattr(self.agent, 'conversation'):
+                conversation_history = self.agent.conversation.history.copy() if self.agent.conversation.history else None
+                if conversation_history:
+                    self._logger.debug(f"[DecomposeStage] 已获取 {len(conversation_history)} 条对话历史")
             
             # 如果没有提供 ability_tags，使用默认值
             if not ability_tags:
                 ability_tags = ["llm_response", "文件读取", "文件写入", "命令执行", "网络搜索"]
                 self._logger.debug(f"使用默认能力标签: {ability_tags}")
             
-            # 调用真实的任务拆解器
+            # 调用真实的任务拆解器（只传递附件元信息）
             if self.task_decomposer:
                 task_tree = self.task_decomposer.analyze_and_decompose(
                     user_task=user_input,
                     ability_tags=ability_tags,
-                    pending_task=pending_task
+                    pending_task=pending_task,
+                    attachments=attachments,
+                    conversation_history=conversation_history
                 )
                 
                 # 保存 token 使用量到上下文

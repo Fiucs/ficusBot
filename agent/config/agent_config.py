@@ -173,6 +173,51 @@ class AgentConfig:
             return self.workspace_root
         return GLOBAL_CONFIG.get("workspace_root", "./workspace")
     
+    def get_agent_workspace_dir(self) -> str:
+        """
+        获取 Agent 专属工作目录
+        
+        在全局 workspace_root 下创建以 agent_id 命名的子目录。
+        这样每个 Agent 都有独立的工作空间，避免冲突。
+        
+        Returns:
+            Agent 专属工作目录路径
+        """
+        import os
+        workspace_root = self.get_workspace_root()
+        return os.path.join(workspace_root, self.agent_id)
+    
+    def ensure_workspace_dirs(self) -> str:
+        """
+        确保 Agent 专属工作目录存在
+        
+        创建以下目录结构：
+        - {workspace_root}/{agent_id}/
+        - {workspace_root}/{agent_id}/memory/
+        - {workspace_root}/{agent_id}/tasks/
+        - {workspace_root}/{agent_id}/skills/
+        - {workspace_root}/{agent_id}/models/
+        
+        Returns:
+            Agent 专属工作目录路径
+        """
+        import os
+        from loguru import logger
+        
+        agent_workspace = self.get_agent_workspace_dir()
+        
+        sub_dirs = ["memory", "tasks", "skills", "models"]
+        
+        os.makedirs(agent_workspace, exist_ok=True)
+        
+        for sub_dir in sub_dirs:
+            dir_path = os.path.join(agent_workspace, sub_dir)
+            os.makedirs(dir_path, exist_ok=True)
+        
+        logger.debug(f"[AgentConfig] Agent '{self.agent_id}' 工作目录已创建: {agent_workspace}")
+        
+        return agent_workspace
+    
     def get_file_allow_list(self) -> List[str]:
         """
         获取文件白名单（Agent 级别覆盖全局）

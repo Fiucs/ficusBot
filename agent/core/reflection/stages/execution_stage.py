@@ -7,6 +7,7 @@ ExecutionStage 任务执行阶段
 
 from typing import Any, TYPE_CHECKING, Dict, List
 
+
 from loguru import logger
 from colorama import Fore, Style
 
@@ -14,6 +15,7 @@ from ..base_stage import Stage, StageContext, StageResult
 
 if TYPE_CHECKING:
     from ..engine import ReflectionEngine
+    from agent.core.agent import Agent
 
 
 class ExecutionStage(Stage):
@@ -33,7 +35,7 @@ class ExecutionStage(Stage):
         >>> result = stage.run(context)
     """
     
-    def __init__(self, agent: Any, reflection_engine: "ReflectionEngine" = None):
+    def __init__(self, agent: "Agent", reflection_engine: "ReflectionEngine" = None):
         """
         初始化 ExecutionStage
         
@@ -86,26 +88,44 @@ class ExecutionStage(Stage):
                 # 获取用户输入（从上下文或任务树）
                 user_input = context.user_input or task_goal
                 
+                # 获取图片（从上下文）
+                images = context.get("images")
+                
                 # 创建 TokenCounter 用于统计执行阶段的 token
                 counter = TokenCounter()
                 
-                # 调用 Agent 的执行方法
-                result = self.agent._execute_by_task_type(task_tree, user_input, counter)
+                # 调用 Agent 的执行方法（Pipeline 模式，跳过汇总）
+                result = self.agent._execute_by_task_type(
+                    task_tree, 
+                    user_input, 
+                    counter, 
+                    skip_summarize=True,
+                    images=images
+                )
                 
-                # 保存执行结果到上下文（包含 token 统计）
+                # 保存执行结果到上下文
                 context.set("execution_result", result)
                 context.set("execution_prompt_tokens", result.get("total_prompt_tokens", 0))
                 context.set("execution_completion_tokens", result.get("total_completion_tokens", 0))
                 context.set("execution_elapsed_time", result.get("elapsed_time", 0.0))
                 
-                # 检查执行结果
-                if result.get("content"):
-                    self._logger.info(f"{Fore.GREEN}[ExecutionStage] 任务执行完成{Style.RESET_ALL}")
+                # 保存 task_id 和 task_tree 到上下文（供 SummarizeStage 使用）
+                task_id = result.get("task_id")
+                if task_id:
+                    context.set("task_id", task_id)
+                    context.set("task_tree", task_tree)
+                    context.set("final_status", result.get("final_status", "completed"))
+                    self._logger.info(f"{Fore.GREEN}[ExecutionStage] 任务执行完成，task_id: {task_id}{Style.RESET_ALL}")
                     return StageResult(success=True, data=result)
                 else:
-                    error_msg = "任务执行返回空结果"
-                    self._logger.warning(f"{Fore.YELLOW}[ExecutionStage] {error_msg}{Style.RESET_ALL}")
-                    return StageResult(success=False, message=error_msg)
+                    # Legacy 模式（直接返回了汇总结果）
+                    if result.get("content"):
+                        self._logger.info(f"{Fore.GREEN}[ExecutionStage] 任务执行完成（Legacy 模式）{Style.RESET_ALL}")
+                        return StageResult(success=True, data=result)
+                    else:
+                        error_msg = "任务执行返回空结果且无 task_id"
+                        self._logger.warning(f"{Fore.YELLOW}[ExecutionStage] {error_msg}{Style.RESET_ALL}")
+                        return StageResult(success=False, message=error_msg)
             else:
                 # Agent 未提供，返回模拟数据（用于测试）
                 self._logger.warning(f"{Fore.YELLOW}[ExecutionStage] Agent 未提供或缺少 _execute_by_task_type 方法，返回模拟数据{Style.RESET_ALL}")

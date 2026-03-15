@@ -119,21 +119,32 @@ class EmbeddingService:
                 return
             
             logger.info(f"加载 GGUF 嵌入模型: {model_path}")
+            logger.info(f"正在初始化模型，请稍候...")
             
-            llm = Llama(
-                model_path=model_path,
-                embedding=True,
-                n_ctx=8192,
-                n_batch=2048,
-                n_ubatch=2048,
-                n_gpu_layers=-1,
-                n_threads=8,
-                verbose=False
-            )
+            import sys
+            
+            old_stderr = sys.stderr
+            sys.stderr = open(os.devnull, 'w')
+            
+            try:
+                llm = Llama(
+                    model_path=model_path,
+                    embedding=True,
+                    n_ctx=4096,
+                    n_batch=2048,
+                    n_ubatch=2048,
+                    n_gpu_layers=-1,
+                    n_threads=8,
+                    verbose=False
+                )
+            finally:
+                sys.stderr.close()
+                sys.stderr = old_stderr
             
             self.embedding_type = "gguf"
             self.model = llm
             self.batch_size = 1
+            logger.info(f"GGUF 嵌入模型加载完成")
         except ImportError:
             logger.warning("llama-cpp-python 未安装，GGUF 嵌入功能将不可用。安装: pip install llama-cpp-python")
             self.embedding_type = "none"

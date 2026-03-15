@@ -222,8 +222,18 @@ class MessageChannel:
         Returns:
             响应对象
         """
+        from agent.utils.shutdown import is_shutting_down
+        
         handler_start = time.time()
         logger.debug(f"[MessageChannel] 开始调用处理器: {name}")
+        
+        if is_shutting_down():
+            logger.info(f"[MessageChannel] 系统正在关闭，跳过处理器: {name}")
+            return MessageResponse(
+                message_id=message.id,
+                success=False,
+                error="System is shutting down"
+            )
         
         try:
             if hasattr(handler, 'handle'):

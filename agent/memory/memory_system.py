@@ -33,7 +33,7 @@ import json5
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from loguru import logger
 
@@ -209,65 +209,67 @@ class MemorySystem:
                 f.write(tool_index_content)
             logger.info(f"创建工具索引文件: {tool_index_file}")
         
-        if not memory_index_file.exists():
-            memory_index_content = '''{
-    // ==========================================
-    // 记忆索引文件 - 存储用户的长期记忆
-    // ==========================================
-    // 
-    // 字段说明：
-    //   id: 记忆唯一标识（8位UUID）
-    //   content: 记忆内容
-    //   memory_type: 记忆类型
-    //     - conversation: 对话记录
-    //     - fact: 事实信息
-    //     - preference: 用户偏好
-    //     - task: 任务结果
-    //     - insight: 洞察总结
-    //     - document: 文档摘要
-    //   importance: 重要性评分（1-10，默认5）
-    //   tags: 标签列表（用于分类和检索）
-    //   created_at: 创建时间
-    //
-    // ==========================================
+#         if not memory_index_file.exists():
+#             memory_index_content = '''{
+#     // ==========================================
+#     // 记忆索引文件 - 存储用户的长期记忆
+#     // ==========================================
+#     // 
+#     // 字段说明：
+#     //   id: 记忆唯一标识（8位UUID）
+#     //   content: 记忆内容
+#     //   memory_type: 记忆类型
+#     //     - conversation: 对话记录
+#     //     - fact: 事实信息
+#     //     - preference: 用户偏好
+#     //     - task: 任务结果
+#     //     - insight: 洞察总结
+#     //     - document: 文档摘要
+#     //   importance: 重要性评分（1-10，默认5）
+#     //   tags: 标签列表（用于分类和检索）
+#     //   created_at: 创建时间
+#     //
+#     // ==========================================
     
-    "version": "1.0",
-    "updated_at": "''' + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + '''",
-    "memories": [
-        // 示例：用户偏好
-        // {
-        //     "id": "pref001",
-        //     "content": "用户偏好使用中文交流，工作语言为Python",
-        //     "memory_type": "preference",
-        //     "importance": 8,
-        //     "tags": ["language", "programming"],
-        //     "created_at": "2026-03-05 10:00:00"
-        // },
-        // 
-        // 示例：事实信息
-        // {
-        //     "id": "fact001",
-        //     "content": "项目使用FastAPI框架，数据库为PostgreSQL",
-        //     "memory_type": "fact",
-        //     "importance": 7,
-        //     "tags": ["project", "tech_stack"],
-        //     "created_at": "2026-03-05 10:30:00"
-        // },
-        // 
-        // 示例：任务结果
-        // {
-        //     "id": "task001",
-        //     "content": "已完成用户认证模块的开发，使用JWT令牌",
-        //     "memory_type": "task",
-        //     "importance": 6,
-        //     "tags": ["completed", "auth"],
-        //     "created_at": "2026-03-05 14:00:00"
-        // }
-    ]
-}'''
-            with open(memory_index_file, "w", encoding="utf-8") as f:
-                f.write(memory_index_content)
-            logger.info(f"创建记忆索引文件: {memory_index_file}")
+#     "version": "1.0",
+#     "updated_at": "''' + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + '''",
+#     "memories": [
+#         // 示例：用户偏好
+#         // {
+#         //     "id": "pref001",
+#         //     "content": "用户偏好使用中文交流，工作语言为Python",
+#         //     "memory_type": "preference",
+#         //     "importance": 8,
+#         //     "tags": ["language", "programming"],
+#         //     "created_at": "2026-03-05 10:00:00"
+#         // },
+#         // 
+#         // 示例：事实信息
+#         // {
+#         //     "id": "fact001",
+#         //     "content": "项目使用FastAPI框架，数据库为PostgreSQL",
+#         //     "memory_type": "fact",
+#         //     "importance": 7,
+#         //     "tags": ["project", "tech_stack"],
+#         //     "created_at": "2026-03-05 10:30:00"
+#         // },
+#         // 
+#         // 示例：任务结果
+#         // {
+#         //     "id": "task001",
+#         //     "content": "已完成用户认证模块的开发，使用JWT令牌",
+#         //     "memory_type": "task",
+#         //     "importance": 6,
+#         //     "tags": ["completed", "auth"],
+#         //     "created_at": "2026-03-05 14:00:00"
+#         // }
+#     ]
+# }'''
+
+
+            # with open(memory_index_file, "w", encoding="utf-8") as f:
+            #     f.write(memory_index_content)
+            # logger.info(f"创建记忆索引文件: {memory_index_file}")
     
     def _init_db(self):
         """初始化数据库连接和表"""
@@ -475,9 +477,98 @@ class MemorySystem:
             {"keep_tools": [...], "memory_tools": [...]}
         """
         result = self.process_tools(all_tools)
-        await self.sync_memory_tools(result["memory_tools"])
-        logger.info(f"异步初始化完成，keep_tools={len(result['keep_tools'])}, memory_tools={len(result['memory_tools'])}")
+        
+        skill_tools = self._build_skill_tools_from_index()
+        
+        all_memory_tools = result["memory_tools"] + skill_tools
+        
+        if all_memory_tools:
+            await self.sync_memory_tools(all_memory_tools)
+            logger.info(f"同步 {len(all_memory_tools)} 个工具到记忆索引（内置工具: {len(result['memory_tools'])}, 技能: {len(skill_tools)}）")
+        
+        logger.info(f"异步初始化完成，keep_tools={len(result['keep_tools'])}, memory_tools={len(result['memory_tools'])}, skill_tools={len(skill_tools)}")
         return result
+    
+    def _build_skill_tools_from_index(self) -> List[Dict]:
+        """
+        从 tool_index.json 构建技能工具定义
+        
+        为 add_to_memory=true 的技能创建虚拟工具定义，
+        用于向量搜索和 discover 发现。
+        description 从 MD 文件的 YAML frontmatter 读取。
+        
+        Returns:
+            技能工具定义列表
+        """
+        import frontmatter
+        
+        index_data = self.tool_store._read_tool_index()
+        skill_tools = []
+        
+        workspace_root = self._get_workspace_root()
+        
+        for tool in index_data.get("tools", []):
+            if tool.get("tool_type") != "skill":
+                continue
+            if not tool.get("add_to_memory", False):
+                continue
+            
+            name = tool.get("name", "")
+            if not name.startswith("skill_"):
+                continue
+            
+            skill_name = name[6:]
+            capability = tool.get("capability", "")
+            keywords = tool.get("keywords", [])
+            tags = tool.get("tags", [])
+            source = tool.get("source", "")
+            
+            skill_md_path = ""
+            description = tool.get("description", capability)
+            
+            if source:
+                skill_md_path = os.path.join(workspace_root, source, "SKILL.md")
+                try:
+                    if os.path.exists(skill_md_path):
+                        post = frontmatter.load(skill_md_path)
+                        if "description" in post.metadata:
+                            description = post.metadata["description"]
+                except Exception as e:
+                    logger.warning(f"读取 MD 文件失败 {skill_md_path}: {e}")
+            
+            keyword_str = "、".join(keywords) if keywords else ""
+            tag_str = "、".join(tags) if tags else ""
+            full_desc = f"{description}"
+            # if keyword_str:
+            #     full_desc += f"\n关键词: {keyword_str}"
+            # if tag_str:
+            #     full_desc += f"\n标签: {tag_str}"
+            
+            skill_tool = {
+                "name": name,
+                "description": full_desc,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": f"技能名称，固定为: {skill_name}",
+                            "enum": [skill_name]
+                        }
+                    },
+                    "required": ["skill_name"]
+                },
+                "tool_type": "skill",
+                "skill_name": skill_name,
+                "capability": capability,
+                "keywords": keywords,
+                "tags": tags,
+                "skill_md_path": skill_md_path
+            }
+            skill_tools.append(skill_tool)
+            logger.debug(f"构建技能工具定义: {name}, path={skill_md_path}")
+        
+        return skill_tools
     
     async def search_tools(self, query: str, top_k: int = 5, distance_threshold: float = 1.0) -> List[Dict]:
         """
@@ -549,6 +640,8 @@ class MemorySystem:
         """
         memory_id = str(uuid.uuid4())[:8]
         now = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        date_str = now.split()[0]
+        file_name = f"{date_str}.md"
         
         # 构建记忆字典
         memory = {
@@ -560,29 +653,37 @@ class MemorySystem:
             "created_at": now
         }
         
-        # 保存到MD文件
-        self.memory_store.save(memory)
+        # 获取写入锁（防止 watchdog 重复处理）
+        self.memory_store.acquire_write_lock(file_name)
         
-        # 保存到向量数据库
-        if self.memories_table is not None:
-            embedding = await self._embed(content)
-            if embedding:
-                entry = {
-                    "id": memory_id,
-                    "content": content,
-                    "embedding": embedding,
-                    "memory_type": memory_type,
-                    "importance": importance,
-                    "tags": tags or [],
-                    "created_at": now
-                }
-                try:
-                    self.memories_table.add([entry])
-                except Exception as e:
-                    logger.error(f"向量数据库写入失败: {e}")
-        
-        logger.info(f"记忆已保存: {memory_id}")
-        return memory_id
+        try:
+            # 保存到MD文件
+            self.memory_store.save(memory)
+            
+            # 保存到向量数据库
+            if self.memories_table is not None:
+                embedding = await self._embed(content)
+                if embedding:
+                    entry = {
+                        "id": memory_id,
+                        "content": content,
+                        "embedding": embedding,
+                        "memory_type": memory_type,
+                        "importance": importance,
+                        "tags": tags or [],
+                        "created_at": now
+                    }
+                    try:
+                        self.memories_table.add([entry])
+                    except Exception as e:
+                        logger.error(f"向量数据库写入失败: {e}")
+            
+            logger.info(f"记忆已保存: {memory_id}")
+            return memory_id
+        finally:
+            # 延迟释放锁，确保 watchdog 能检测到锁状态
+            await asyncio.sleep(0.3)
+            self.memory_store.release_write_lock(file_name)
     
     async def save_batch(self, items: List[Dict[str, Any]]) -> List[str]:
         """
@@ -705,8 +806,7 @@ class MemorySystem:
                         "type": r.get("memory_type", "conversation"),
                         "importance": r.get("importance", 5),
                         "tags": r.get("tags", []),
-                        "created_at": r.get("created_at", ""),
-                        "_distance": distance
+                        "created_at": r.get("created_at", "")
                     })
                     if len(results["memories"]) >= top_k:
                         break
@@ -718,6 +818,8 @@ class MemorySystem:
                 rows = self.tools_table.search(query_embedding).limit(top_k * 2).to_list()
                 for r in rows:
                     distance = r.get("_distance", 999.0)
+                    tool_name = r.get("name", "unknown")
+                    logger.debug(f"[搜索] 工具: {tool_name}, distance={distance:.4f}, threshold={distance_threshold}")
                     if distance > distance_threshold:
                         continue
                     
@@ -730,7 +832,6 @@ class MemorySystem:
                         continue
                     
                     tool_def = json5.loads(r.get("tool_definition", "{}"))
-                    tool_def["_distance"] = distance
                     results["tools"].append(tool_def)
                     self.tool_store._increment_query_count(r["name"])
                     
@@ -752,17 +853,109 @@ class MemorySystem:
             是否删除成功
         """
         try:
-            # 从MD文件删除
-            self.memory_store.delete(memory_id)
+            # 先获取原记忆以确定文件名
+            old_memory = self.memory_store.get(memory_id)
+            if old_memory:
+                date_str = old_memory.get("created_at", "").split()[0]
+            else:
+                date_str = datetime.now().strftime("%Y-%m-%d")
+            file_name = f"{date_str}.md"
             
-            # 从向量数据库删除
-            if self.memories_table is not None:
-                self.memories_table.delete(f"id = '{memory_id}'")
+            # 获取写入锁（防止 watchdog 重复处理）
+            self.memory_store.acquire_write_lock(file_name)
             
-            return True
+            try:
+                # 从MD文件删除
+                self.memory_store.delete(memory_id)
+                
+                # 从向量数据库删除
+                if self.memories_table is not None:
+                    self.memories_table.delete(f"id = '{memory_id}'")
+                
+                return True
+            finally:
+                # 延迟释放锁
+                await asyncio.sleep(0.3)
+                self.memory_store.release_write_lock(file_name)
+                
         except Exception as e:
             logger.error(f"删除记忆失败: {e}")
             return False
+    
+    async def update(self, memory_id: str, **kwargs) -> Optional[Dict]:
+        """
+        更新记忆
+        
+        更新MD文件中的记忆内容，并同步更新向量数据库
+        
+        Args:
+            memory_id: 记忆ID
+            **kwargs: 要更新的字段，可包含:
+                - content: 记忆内容
+                - memory_type: 记忆类型
+                - importance: 重要性评分
+                - tags: 标签列表
+        
+        Returns:
+            更新后的记忆字典，未找到返回None
+        """
+        try:
+            # 过滤有效字段
+            valid_fields = {"content", "memory_type", "importance", "tags"}
+            updates = {k: v for k, v in kwargs.items() if k in valid_fields}
+            
+            if not updates:
+                logger.warning(f"更新记忆 {memory_id}: 没有提供有效字段")
+                return None
+            
+            # 先获取原记忆以确定文件名
+            old_memory = self.memory_store.get(memory_id)
+            if old_memory:
+                date_str = old_memory.get("created_at", "").split()[0]
+            else:
+                date_str = datetime.now().strftime("%Y-%m-%d")
+            file_name = f"{date_str}.md"
+            
+            # 获取写入锁（防止 watchdog 重复处理）
+            self.memory_store.acquire_write_lock(file_name)
+            
+            try:
+                # 更新MD文件
+                updated_memory = self.memory_store.update(memory_id, updates)
+                
+                if not updated_memory:
+                    return None
+                
+                # 更新向量数据库
+                if self.memories_table is not None:
+                    # 删除旧记录
+                    self.memories_table.delete(f"id = '{memory_id}'")
+                    
+                    # 重新计算embedding并插入新记录
+                    embedding = await self._embed(updated_memory["content"])
+                    if embedding:
+                        entry = {
+                            "id": updated_memory["id"],
+                            "content": updated_memory["content"],
+                            "embedding": embedding,
+                            "memory_type": updated_memory["memory_type"],
+                            "importance": updated_memory["importance"],
+                            "tags": updated_memory["tags"],
+                            "created_at": updated_memory["created_at"]
+                        }
+                        self.memories_table.add([entry])
+                        logger.info(f"向量数据库已更新: {memory_id}")
+                
+                logger.info(f"记忆更新完成: {memory_id}")
+                return updated_memory
+            finally:
+                # 延迟释放锁
+                await asyncio.sleep(0.3)
+                self.memory_store.release_write_lock(file_name)
+            
+        except Exception as e:
+            logger.error(f"更新记忆失败 {memory_id}: {e}")
+            return None
     
     async def list_memories(
         self,
@@ -974,11 +1167,59 @@ class MemorySystem:
         """检查记忆系统是否启用"""
         return self.config.get("enabled", True)
     
-    def get_all_ability_tags(self) -> List[str]:
+    def get_all_capabilities(self) -> List[str]:
         """
         获取所有能力标签（用于任务拆解阶段）
-        
+
         Returns:
             能力标签列表
         """
-        return self.tool_store.get_all_ability_tags()
+        return self.tool_store.get_all_capabilities()
+
+    def start_file_watcher(
+        self,
+        config_path: Optional[str] = None,
+        reload_config_callback: Optional[Any] = None
+    ) -> Optional[Any]:
+        """
+        启动文件监控器
+
+        监控 MD 记忆文件变更和配置文件热加载。
+        根据 config.file_watcher.enabled 配置决定是否启动。
+
+        Args:
+            config_path: 配置文件目录路径
+            reload_config_callback: 配置文件变更时的回调函数
+
+        Returns:
+            FileWatcher 实例，如果未启用或启动失败返回 None
+        """
+        from agent.watchdog.file_watcher_start import start_file_watcher
+
+        return start_file_watcher(
+            memory_system=self,
+            config_path=config_path,
+            reload_config_callback=reload_config_callback
+        )
+
+    def stop_file_watcher(self) -> bool:
+        """
+        停止文件监控器
+
+        Returns:
+            是否成功停止
+        """
+        from agent.watchdog.file_watcher_start import stop_file_watcher
+
+        return stop_file_watcher()
+
+    def is_file_watcher_running(self) -> bool:
+        """
+        检查文件监控器是否正在运行
+
+        Returns:
+            是否正在运行
+        """
+        from agent.watchdog.file_watcher_start import is_file_watcher_running
+
+        return is_file_watcher_running()

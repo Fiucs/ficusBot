@@ -153,7 +153,7 @@ class BrowserTool:
         """
         if self._loop is None or self._loop.is_closed():
             try:
-                self._loop = asyncio.get_event_loop()
+                self._loop = asyncio.get_running_loop()
             except RuntimeError:
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
@@ -169,12 +169,13 @@ class BrowserTool:
         返回:
             协程执行结果
         """
-        loop = self._get_event_loop()
-        if loop.is_running():
+        try:
+            loop = asyncio.get_running_loop()
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(asyncio.run, coro)
                 return future.result()
-        else:
+        except RuntimeError:
+            loop = self._get_event_loop()
             return loop.run_until_complete(coro)
     
     def _make_caller(self, method_name: str):

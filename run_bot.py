@@ -195,7 +195,11 @@ async def run_bot(
     
     if with_cli and agent:
         def run_cli_thread():
-            asyncio.run(run_cli(agent))
+            try:
+                asyncio.run(run_cli(agent))
+            finally:
+                from agent.utils.shutdown import shutdown
+                shutdown("CLI 退出")
         
         cli_thread = threading.Thread(target=run_cli_thread, daemon=True)
         cli_thread.start()
@@ -287,6 +291,10 @@ def main():
     
     args = parser.parse_args()
     
+    from agent.utils.shutdown import shutdown, reset_shutdown_state
+    
+    reset_shutdown_state()
+    
     try:
         asyncio.run(run_bot(
             use_echo=args.echo, 
@@ -298,7 +306,14 @@ def main():
             agents=args.agents
         ))
     except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
+        shutdown("用户按下 Ctrl+C")
+        print(f"\n{Fore.YELLOW}【bot】 再见！👋{Style.RESET_ALL}")
+        raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.error(f"[Bot] 启动失败: {e}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -87,6 +87,7 @@ class HeartbeatManager:
                 "status": "pending",
                 "current_step": None,
                 "completed_steps": [],
+                "started_steps": [],  # 新增：已开始的步骤（包括失败的）
                 "progress": 0,
                 "total_steps": task_tree.get("total_steps", 0),
                 "started_at": now,
@@ -166,6 +167,12 @@ class HeartbeatManager:
             
             heartbeat["status"] = "executing"
             heartbeat["current_step"] = step_id
+            
+            # 记录已开始的步骤
+            started_steps = heartbeat.get("started_steps", [])
+            if step_id not in started_steps:
+                started_steps.append(step_id)
+            heartbeat["started_steps"] = started_steps
             
             return self.save(heartbeat)
             

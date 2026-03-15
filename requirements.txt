@@ -11,8 +11,6 @@ fastapi==0.129.0
 uvicorn==0.40.0
 colorama==0.4.6
 
-# TUI 终端界面
-textual==3.2.0
 
 # FastAPI 必需的依赖
 pydantic==2.12.5

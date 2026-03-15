@@ -118,6 +118,7 @@ class AgentInitializer:
         try:
             from agent.tool.browsertool import BrowserTool
             agent.browser_tool = BrowserTool.get_instance()
+            agent.tool_adapter.browser_tool = agent.browser_tool
             registered_count = agent.browser_tool.register_to_tool_adapter(agent.tool_adapter)
             logger.info(f"{Fore.CYAN}[Browser] Registered {registered_count} browser tools{Style.RESET_ALL}")
             
@@ -193,6 +194,9 @@ class AgentInitializer:
                     )
                     future.result()
             
+            # 启动 MD 文件监控器（监控 MD 文件变更）
+            AgentInitializer._start_file_watcher(agent)
+
         except ImportError as e:
             logger.warning(f"{Fore.YELLOW}[Memory] 记忆系统依赖未安装: {e}{Style.RESET_ALL}")
             agent.memory_system = None
@@ -290,28 +294,150 @@ class AgentInitializer:
     @staticmethod
     def _inject_skill_list_filtered(agent: "Agent", memory_tool_names: set) -> None:
         """
-        注入技能列表到 {INJECTED_SKILLS_LIST} 占位符（过滤已移入记忆索引的技能）
+        注入技能列表到 {INJECTED_SKILLS_LIST} 占位符
+        
+        根据 tool_index.json 中的 add_to_memory 配置过滤技能：
+        - add_to_memory=true 的技能不在常驻列表显示，需通过 discover 发现
+        - add_to_memory=false 或未配置的技能在常驻列表显示
+        
+        技能列表包含: name, description, filepath
         
         Args:
             agent: Agent 实例
-            memory_tool_names: 已加入记忆索引的工具名称集合
+            memory_tool_names: 已加入记忆索引的工具名称集合（保留参数兼容性）
         """
         try:
+            import json5
+            from pathlib import Path
+            
+            memory_index_path = Path(agent.skill_loader.skill_root_dir).parent / "memory" / "memory_index"
+            tool_index_file = memory_index_path / "tool_index.json"
+            
+            memory_skills = set()
+            if tool_index_file.exists():
+                with open(tool_index_file, "r", encoding="utf-8") as f:
+                    index_data = json5.load(f)
+                for tool in index_data.get("tools", []):
+                    if tool.get("tool_type") == "skill" and tool.get("add_to_memory", False):
+                        tool_name = tool.get("name", "")
+                        if tool_name.startswith("skill_"):
+                            memory_skills.add(tool_name[6:])
+            
+            unique_skills = {skill["name"]: skill for skill in agent.skill_loader.skills.values()}
+            
             lines = []
             filtered_count = 0
-            for skill_name, skill_info in agent.skill_loader.skills.items():
-                tool_name = f"skill_{skill_name}"
-                if tool_name in memory_tool_names:
+            for skill_name, skill_info in unique_skills.items():
+                if skill_name in memory_skills:
                     filtered_count += 1
                     continue
                 desc = skill_info.get("description", "")[:80]
-                lines.append(f"- name: {skill_name}\n  description: {desc}")
+                filepath = skill_info.get("skill_md_path", "")
+                lines.append(f"- name: {skill_name}\n  description: {desc}\n  filepath: {filepath}")
             
             skill_list_str = "\n".join(lines) if lines else "_暂无可用技能_"
             agent.conversation.inject_skill_list(skill_list_str)
             logger.info(f"{Fore.CYAN}[技能列表注入] 成功注入 {len(lines)} 个技能，已过滤 {filtered_count} 个记忆索引技能{Style.RESET_ALL}")
         except Exception as e:
             logger.warning(f"{Fore.YELLOW}[技能列表注入] 失败: {e}{Style.RESET_ALL}")
+
+    @staticmethod
+    def _start_file_watcher(agent: "Agent") -> None:
+        """
+        启动 MD 文件监控器
+
+        监控 MD 记忆文件变更，用户编辑自动同步到向量库。
+        根据 config.file_watcher.enabled 配置决定是否启动（默认启用）。
+        支持多 Agent 架构，每个 Agent 独立管理监控器。
+
+        Args:
+            agent: Agent 实例
+        """
+        if agent.memory_system is None:
+            return
+
+        try:
+            from agent.watchdog.file_watcher_start import start_file_watcher
+
+            # 启动 MD 文件监控器（传递 agent_id 支持多 Agent）
+            watcher = start_file_watcher(
+                memory_system=agent.memory_system,
+                agent_id=agent.agent_id
+            )
+
+            if watcher:
+                logger.info(f"{Fore.CYAN}[FileWatcher] Agent '{agent.agent_id}' MD 文件监控器启动成功{Style.RESET_ALL}")
+            else:
+                logger.info(f"{Fore.YELLOW}[FileWatcher] Agent '{agent.agent_id}' MD 文件监控器未启动（可能已禁用）{Style.RESET_ALL}")
+
+        except ImportError as e:
+            logger.warning(f"{Fore.YELLOW}[FileWatcher] 文件监控模块未安装: {e}{Style.RESET_ALL}")
+            logger.warning(f"{Fore.YELLOW}[FileWatcher] 请运行: pip install watchdog{Style.RESET_ALL}")
+        except Exception as e:
+            logger.error(f"{Fore.RED}[FileWatcher] Agent '{agent.agent_id}' 启动 MD 文件监控器失败: {e}{Style.RESET_ALL}")
+
+    @staticmethod
+    def _start_config_watcher(agent: "Agent") -> None:
+        """
+        启动配置文件监控器
+
+        监控配置文件变更并自动热加载。
+        根据 hot_reload.config.enabled 配置决定是否启动（默认启用）。
+        独立于记忆系统，即使记忆功能禁用也会启动。
+
+        热加载时会自动重载所有已创建的 Agent 实例（通过 AgentRegistry）。
+
+        Args:
+            agent: Agent 实例（用于日志记录，实际重载通过 AgentRegistry 管理）
+        """
+        try:
+            from agent.watchdog.config_watcher import start_config_watcher
+
+            watcher = start_config_watcher()
+
+            if watcher:
+                logger.info(f"{Fore.CYAN}[ConfigWatcher] 配置文件监控器启动成功{Style.RESET_ALL}")
+            else:
+                logger.info(f"{Fore.YELLOW}[ConfigWatcher] 配置文件监控器未启动（可能已禁用）{Style.RESET_ALL}")
+
+        except ImportError as e:
+            logger.warning(f"{Fore.YELLOW}[ConfigWatcher] 文件监控模块未安装: {e}{Style.RESET_ALL}")
+            logger.warning(f"{Fore.YELLOW}[ConfigWatcher] 请运行: pip install watchdog{Style.RESET_ALL}")
+        except Exception as e:
+            logger.error(f"{Fore.RED}[ConfigWatcher] 启动配置文件监控器失败: {e}{Style.RESET_ALL}")
+
+    @staticmethod
+    def _start_tool_index_watcher(agent: "Agent") -> None:
+        """
+        启动工具索引文件监控器
+
+        监控 tool_index.json 变更并自动热加载。
+        根据 hot_reload.tool_index.enabled 配置决定是否启动（默认启用）。
+        独立于记忆系统，即使记忆功能禁用也会启动。
+
+        Args:
+            agent: Agent 实例
+        """
+        try:
+            from agent.watchdog.tool_index_watcher import (
+                start_tool_index_watcher,
+                set_agent_instance
+            )
+
+            set_agent_instance(agent)
+
+            watcher = start_tool_index_watcher()
+
+            if watcher:
+                logger.info(f"{Fore.CYAN}[ToolIndexWatcher] 工具索引监控器启动成功{Style.RESET_ALL}")
+            else:
+                logger.info(f"{Fore.YELLOW}[ToolIndexWatcher] 工具索引监控器未启动（可能已禁用）{Style.RESET_ALL}")
+
+        except ImportError as e:
+            logger.warning(f"{Fore.YELLOW}[ToolIndexWatcher] 文件监控模块未安装: {e}{Style.RESET_ALL}")
+            logger.warning(f"{Fore.YELLOW}[ToolIndexWatcher] 请运行: pip install watchdog{Style.RESET_ALL}")
+        except Exception as e:
+            logger.error(f"{Fore.RED}[ToolIndexWatcher] 启动工具索引监控器失败: {e}{Style.RESET_ALL}")
 
     @staticmethod
     def init_task_decomposition(agent: "Agent") -> None:

@@ -121,13 +121,14 @@ class ToolStore:
         
         根据索引文件配置处理工具：
         - enabled=false → 从工具列表移除
-        - enabled=true, add_to_memory=false → 保留在工具列表
+        - enabled=true, add_to_memory=false 或未配置 → 保留在工具列表（常驻）
         - enabled=true, add_to_memory=true → 存入记忆索引并移除
+        
+        特殊处理：
+        - category=core 的工具始终常驻
         
         匹配规则：
         - name 必须与系统工具名完全一致
-        - skill 类型使用完整名（如 "skill_xxx"）
-        - builtin 类型使用原始名称（如 "file_read"）
         
         Args:
             all_tools: 系统加载的所有工具列表
@@ -157,14 +158,18 @@ class ToolStore:
             
             if index_entry:
                 enabled = index_entry.get("enabled", True)
-                add_to_memory = index_entry.get("add_to_memory", True)
+                add_to_memory = index_entry.get("add_to_memory", False)
+                category = index_entry.get("category", "")
                 
                 if not enabled:
                     disabled_tools.append(tool_name)
                     logger.debug(f"  - 工具已禁用: {tool_name}")
                     continue
                 
-                if add_to_memory:
+                if category == "core":
+                    keep_tools.append(tool)
+                    logger.debug(f"  - 核心工具保留常驻: {tool_name}")
+                elif add_to_memory:
                     memory_tools.append(tool)
                     logger.debug(f"  - 工具加入记忆索引: {tool_name}")
                 else:
@@ -201,17 +206,20 @@ class ToolStore:
             func_def = t.get("function", t)
             name = func_def.get("name", "unknown")
             desc = func_def.get("description", "")
-            
+
             index_entry = index_map.get(name, {})
+            capability = index_entry.get("capability", "")
             keywords = " ".join(index_entry.get("keywords", []))
             tags = " ".join(index_entry.get("tags", []))
-            
+
             text_parts = [f"{name}: {desc}"]
+            if capability:
+                text_parts.append(capability)
             if keywords:
                 text_parts.append(keywords)
             if tags:
                 text_parts.append(tags)
-            
+
             texts.append(" ".join(text_parts))
         
         embeddings = await self._embed_batch(texts)
@@ -549,24 +557,25 @@ class ToolStore:
             if t.get("enabled", True) and t.get("add_to_memory", True)
         ]
     
-    def get_all_ability_tags(self) -> List[str]:
+    def get_all_capabilities(self) -> List[str]:
         """
         获取所有能力标签（用于任务拆解阶段）
-        
-        从 tool_index.json 中提取所有 tags 字段，去重后返回。
+
+        从 tool_index.json 中提取所有 capability 字段，去重后返回。
         能力标签用于任务拆解阶段标注每个步骤所需的能力需求，
-        执行阶段会根据能力标签通过 discover 工具动态匹配具体工具。
-        
+        执行阶段会根据能力标签通过向量搜索动态匹配具体工具。
+
         Returns:
-            能力标签列表，如 ["天气查询", "读取文件", "写入文件", ...]
+            能力标签列表，如 ["天气查询", "网络搜索", "文件读取", "文件写入", ...]
         """
-        all_tags = set()
+        all_capabilities = set()
         data = self._read_tool_index()
-        
+
         for tool in data.get("tools", []):
             if tool.get("enabled", True):
-                tags = tool.get("tags", [])
-                all_tags.update(tags)
-                
-        logger.info(f"get_all_ability_tags {len(all_tags)} 个能力标签: {all_tags}")
-        return sorted(list(all_tags))
+                capability = tool.get("capability", "")
+                if capability:
+                    all_capabilities.add(capability)
+
+        logger.info(f"get_all_capabilities {len(all_capabilities)} 个能力: {all_capabilities}")
+        return sorted(list(all_capabilities))

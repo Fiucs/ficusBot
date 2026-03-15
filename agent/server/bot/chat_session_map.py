@@ -17,6 +17,8 @@ from typing import Dict, Optional, Any
 from dataclasses import dataclass, asdict
 from loguru import logger
 
+from agent.config.configloader import GLOBAL_CONFIG
+
 
 @dataclass
 class ChatSessionInfo:
@@ -66,9 +68,13 @@ class ChatSessionMap:
     
     def __init__(
         self, 
-        storage_path: str = "./sessions/chat_session_map.json",
+        storage_path: str = None,
         auto_save: bool = True
     ):
+        if storage_path is None:
+            storage_dir = GLOBAL_CONFIG.get("session.storage_dir", "./sessions")
+            storage_path = os.path.join(storage_dir, "chat_session_map.json")
+        
         self._storage_path = storage_path
         self._auto_save = auto_save
         self._lock = threading.RLock()

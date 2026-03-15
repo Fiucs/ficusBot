@@ -103,7 +103,7 @@ class ToolAdapter:
             return getattr(self.shell_tool, method_name)
         elif tool_type == "browser":
             if self.browser_tool:
-                return getattr(self.browser_tool, method_name)
+                return self.browser_tool._make_caller(method_name)
             else:
                 raise ValueError(f"浏览器工具未启用")
         else:
@@ -132,16 +132,21 @@ class ToolAdapter:
         
         skill_config = config.get("skill_tools", {})
         if skill_config.get("enabled", True):
-            skill_defs = self.skill_loader.get_skill_tool_definitions()
-            for defi in skill_defs:
-                func_name = defi["function"]["name"]
-                alias = func_name.split("_")[1]
-                all_tool_defs.append({
-                    "name": func_name,
-                    "func": lambda alias=alias, **kwargs: self.skill_loader.execute(alias, kwargs),
-                    "description": defi["function"].get("description", ""),
-                    "parameters": defi["function"]["parameters"]
-                })
+            all_tool_defs.append({
+                "name": "get_skill_document",
+                "func": lambda skill_name: self._get_skill_document(skill_name),
+                "description": "获取技能的完整文档。当需要使用技能时，先调用此方法获取文档，文档会注入到 system prompt 中。参数: skill_name(必填,技能名称，如 weather, exa-web-search-free)。返回: 技能文档内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "技能名称，从技能列表中选择，如 weather, exa-web-search-free, multi-search-engine"
+                        }
+                    },
+                    "required": ["skill_name"]
+                }
+            })
         
         for tool_def in config.get("memory_tools", []):
             tool_name = tool_def["name"]
@@ -246,36 +251,35 @@ class ToolAdapter:
             logger.error(f"列出记忆失败: {e}")
             return {"status": "error", "message": f"列出记忆失败: {str(e)}"}
     
+    def _get_skill_document(self, skill_name: str) -> Dict[str, Any]:
+        """
+        获取技能完整文档（统一入口）
+        
+        此方法被 get_skill_document 工具调用，返回技能文档供注入 system prompt。
+        
+        Args:
+            skill_name: 技能名称
+        
+        Returns:
+            {"status": "success", "skill_name": xxx, "document": "完整文档", ...}
+        """
+        return self.skill_loader.get_skill_document(skill_name)
+    
     def _register_skill_tool(self, tool_name: str, func_def: Dict[str, Any]) -> bool:
         """
         注册单个技能工具到 self.tools
+        
+        注意：新架构下，技能通过 get_skill_document 获取文档，
+        不再注册单独的技能工具。此方法仅用于返回技能信息。
         
         Args:
             tool_name: 工具名称（如 skill_weather）
             func_def: 工具定义（包含 description、parameters 等）
         
         Returns:
-            bool: 是否成功注册
+            bool: 始终返回 False（不注册技能工具）
         """
-        if tool_name in self.tools:
-            return False
-        
-        if not tool_name.startswith("skill_"):
-            return False
-        
-        skill_alias = tool_name[6:]
-        self.tools[tool_name] = {
-            "name": tool_name,
-            "func": lambda skill_alias=skill_alias, **kwargs: self.skill_loader.execute(skill_alias, kwargs),
-            "description": func_def.get("description", ""),
-            "parameters": func_def.get("parameters", {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "输入参数"}
-                }
-            })
-        }
-        return True
+        return False
     
     def _discover(
         self,
@@ -289,8 +293,8 @@ class ToolAdapter:
         """
         发现可用资源：工具、技能、记忆
 
-        当 resource_type 为 "tool" 或 "all" 时，会搜索记忆索引中的工具，
-        并将发现的工具动态注册到 tool_adapter.tools 中，使其可被直接调用。
+        当 resource_type 为 "tool" 或 "all" 时，会搜索记忆索引中的工具和技能。
+        对于技能，返回技能名称和文件路径，LLM 需要调用 get_skill_document 获取详细文档。
 
         Args:
             query: 搜索关键词，为空时返回所有资源
@@ -301,7 +305,7 @@ class ToolAdapter:
             date_range: 日期范围过滤（记忆），格式：(start_date, end_date)，如 ("2026-03-01", "2026-03-06")
 
         Returns:
-            {"status": "success", "message": "...", "data": {"tools": [...], "memories": [...]}}
+            {"status": "success", "message": "...", "data": {"tools": [...], "memories": [...], "skills": [...]}}
         """
         if search_type is not None:
             resource_type = search_type
@@ -312,10 +316,8 @@ class ToolAdapter:
             tool_search_config = memory_config.get("tool_search", {})
             distance_threshold = tool_search_config.get("distance_threshold", 1.0)
 
-        # 处理空查询：当 query 为空时，使用较大的距离阈值以返回更多结果
         if not query or query.strip() == "":
             logger.debug(f"[发现] 空查询模式，返回所有资源, resource_type={resource_type}, top_k={top_k}")
-            # 空查询时使用一个较大的阈值以确保返回所有结果
             distance_threshold = max(distance_threshold * 10, 100.0)
             query = ""
 
@@ -328,39 +330,61 @@ class ToolAdapter:
 
             logger.debug(f"[发现] 搜索结果: {len(results.get('tools', []))} 个工具, {len(results.get('memories', []))} 条记忆")
 
-            registered_tools = []
+            skills = []
+            builtin_tools = []
+            filtered_tools = []
             for tool_def in results.get("tools", []):
                 func_def = tool_def.get("function", tool_def)
                 tool_name = func_def.get("name", "")
-                distance = tool_def.get("_distance", 0)
+                tool_type = func_def.get("tool_type", "builtin")
                 if not tool_name:
                     continue
 
-                if self._register_skill_tool(tool_name, func_def):
-                    registered_tools.append(tool_name)
-                    logger.debug(f"[发现] ✓ 动态注册工具: {tool_name}, distance={distance:.4f}, 当前工具总数: {len(self.tools)}")
-                elif tool_name in self.tools:
-                    logger.debug(f"[发现] 工具已存在: {tool_name}")
+                if tool_type == "skill" or tool_name.startswith("skill_"):
+                    skill_name = tool_name[6:] if tool_name.startswith("skill_") else tool_name
+                    skill_md_path = func_def.get("skill_md_path", "")
+                    capability = func_def.get("capability", "")
+                    description = func_def.get("description", "")
+                    skills.append({
+                        "name": skill_name,
+                        "capability": capability,
+                        "description": description,
+                        "filepath": skill_md_path
+                    })
+                else:
+                    filtered_tools.append(tool_def)
+                    if tool_name not in self.tools:
+                        builtin_tools.append(tool_name)
 
-            tools_count = len(results.get("tools", []))
+            tools_count = len(filtered_tools)
             memories_count = len(results.get("memories", []))
-
+            
             message_parts = []
             if memories_count > 0:
                 message_parts.append(f"{memories_count} 条记忆")
-            if tools_count > 0:
-                message_parts.append(f"{tools_count} 个工具")
-            if registered_tools:
-                message_parts.append(f"已注册 {len(registered_tools)} 个工具供直接调用")
-
+            if skills:
+                message_parts.append(f"{len(skills)} 个技能（需调用 get_skill_document 获取文档）")
+            if builtin_tools:
+                message_parts.append(f"{len(builtin_tools)} 个内置工具")
+            
             message = f"找到 {', '.join(message_parts)}" if message_parts else "未找到相关内容"
+            
+            if skills:
+                skill_info = "\n".join([f"  - {s['name']}," for s in skills])
+                message += f"\n\n发现的技能:\n{skill_info}\n请使用 get_skill_document({{'skill_name': '技能名称'}}) 获取技能文档。"
 
+            logger.info(f"[发现] 搜索结果汇总: query='{query}', 找到 {len(skills)} 个技能, {len(builtin_tools)} 个内置工具, {memories_count} 条记忆")
             logger.debug(f"[发现] 完成: {message}")
             
             return {
                 "status": "success",
                 "message": message,
-                "data": results
+                "data": {
+                    "tools": filtered_tools,
+                    "memories": results.get("memories", []),
+                    "skills": skills,
+                    "builtin_tools": builtin_tools
+                }
             }
         except Exception as e:
             logger.error(f"发现资源失败: {e}")

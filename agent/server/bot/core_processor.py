@@ -10,6 +10,7 @@
     - 会话持久化映射管理
 """
 
+import os
 import re
 from typing import Dict, Any, Optional, Callable, Awaitable, TYPE_CHECKING
 from loguru import logger
@@ -19,6 +20,7 @@ from ..command import CommandHandler, CommandContext, CommandResult
 from .chat_session_map import ChatSessionMap, ChatSessionInfo
 from agent.core.messaging.message import Message, MessageSource, MessageType
 from agent.core.messaging import get_channel
+from agent.config.configloader import GLOBAL_CONFIG
 
 if TYPE_CHECKING:
     from agent.registry import AgentRegistry
@@ -46,9 +48,12 @@ class CoreProcessor:
         }
         
         self._command_handler = CommandHandler(agent_registry)
-        self._chat_session_map = ChatSessionMap()
         
-        logger.info("[CoreProcessor] 初始化完成，已加载命令处理器和会话映射")
+        storage_dir = GLOBAL_CONFIG.get("session.storage_dir", "./sessions")
+        chat_session_map_path = os.path.join(storage_dir, "chat_session_map.json")
+        self._chat_session_map = ChatSessionMap(storage_path=chat_session_map_path)
+        
+        logger.info(f"[CoreProcessor] 初始化完成，会话映射路径: {chat_session_map_path}")
     
     def set_agent(self, agent) -> None:
         """设置默认 Agent 实例"""
@@ -83,8 +88,8 @@ class CoreProcessor:
             elif message.images:
                 logger.info(f"[CoreProcessor] 📷 收到带图片的 {message.type} 消息，共 {len(message.images)} 张图片")
                 content = message.content or "[用户发送了一张图片]"
-            elif message.type != "text":
-                logger.debug(f"[CoreProcessor] 跳过非文本消息: type={message.type}")
+            elif not message.content or not message.content.strip():
+                logger.debug(f"[CoreProcessor] 跳过空消息: type={message.type}")
                 return
             else:
                 content = message.content
@@ -179,6 +184,7 @@ class CoreProcessor:
                 type=MessageType.CHAT,
                 content=content,
                 images=message.images,
+                attachments=message.attachments,
                 user_id=message.user_id or message.chat_id,
                 session_id=session_id,
                 metadata={

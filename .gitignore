@@ -74,3 +74,5 @@ docs/
 .ficsbot/workspace/config/mcporter.json
 .ficsbot/workspace/skills/multi-search-engine-2.0.1.zip
 REFLECTION_ARCHITECTURE_PLAN.md
+.ficsbot/downloaded_images/
+fix_md_file.py

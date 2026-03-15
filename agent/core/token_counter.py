@@ -187,6 +187,38 @@ class TokenCounter:
             "total_completion_tokens": self._total_completion_tokens
         }
     
+    def build_result_with_task_id(
+        self, 
+        content: str, 
+        task_id: str, 
+        final_status: str,
+        total_prompt_tokens: int = 0,
+        total_completion_tokens: int = 0,
+        elapsed_time: Optional[float] = None
+    ) -> dict:
+        """
+        构建包含任务 ID 的结果字典（用于 Pipeline 模式）
+        
+        Args:
+            content: 回复内容
+            task_id: 任务 ID
+            final_status: 任务最终状态
+            total_prompt_tokens: 输入 token 数
+            total_completion_tokens: 输出 token 数
+            elapsed_time: 耗时（可选，默认使用当前耗时）
+        
+        Returns:
+            结果字典，包含 task_id, final_status, content, elapsed_time, total_prompt_tokens, total_completion_tokens
+        """
+        return {
+            "task_id": task_id,
+            "final_status": final_status,
+            "content": content,
+            "elapsed_time": elapsed_time if elapsed_time is not None else self.elapsed_time,
+            "total_prompt_tokens": total_prompt_tokens or self._total_prompt_tokens,
+            "total_completion_tokens": total_completion_tokens or self._total_completion_tokens
+        }
+    
     def __enter__(self) -> "TokenCounter":
         """
         上下文管理器入口

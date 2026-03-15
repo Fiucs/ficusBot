@@ -443,6 +443,94 @@ class LLMClient:
                     logger.debug(f"[Thinking] reasoning_effort={effort}")
 
         return kwargs
+    
+    def _is_openai_compatible_model(self, model_name: str, config: Dict[str, Any]) -> bool:
+        """
+        检测是否应使用 OpenAI SDK 直接调用
+        
+        包括：DashScope、Custom 等使用 OpenAI 兼容 API 的提供商
+        
+        Args:
+            model_name: 模型名称
+            config: 模型配置
+            
+        Returns:
+            bool: 是否应使用 OpenAI SDK
+        """
+        model_lower = model_name.lower()
+        provider = config.get("provider", "").lower()
+        
+        if "dashscope" in model_lower or "qwen" in model_lower:
+            return True
+        
+        if provider == "custom":
+            return True
+        
+        return False
+    
+    def _call_openai_compatible(self, messages: List[Dict[str, Any]], config: Dict[str, Any], 
+                                 kwargs: Dict[str, Any]) -> Any:
+        """
+        使用 OpenAI SDK 调用兼容 API
+        
+        支持 DashScope、Custom 等 OpenAI 兼容的提供商
+        
+        Args:
+            messages: 消息列表
+            config: 模型配置
+            kwargs: 所有请求参数
+            
+        Returns:
+            响应对象
+        """
+        from openai import OpenAI
+        
+        api_key = config.get("api_key", "")
+        api_base = config.get("api_base", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        model_name = config.get("model_name", config.get("litellm_model_name", ""))
+        
+        if "/" in model_name:
+            parts = model_name.split("/")
+            if len(parts) > 1 and parts[0] in ("openai", "dashscope"):
+                model_name = "/".join(parts[1:])
+            else:
+                model_name = parts[-1]
+        
+        provider = config.get("provider", "")
+        logger.info(f"[LLMClient] 🔄 使用 OpenAI SDK 调用 {provider}: {model_name}")
+        
+        client = OpenAI(
+            api_key=api_key,
+            base_url=api_base,
+        )
+        
+        openai_kwargs = {
+            "model": model_name,
+            "messages": messages,
+            "max_tokens": kwargs.get("max_tokens", 8192),
+            "temperature": kwargs.get("temperature", 0.7),
+            "stream": kwargs.get("stream", False),
+        }
+        
+        if kwargs.get("tools"):
+            openai_kwargs["tools"] = kwargs["tools"]
+            if kwargs.get("tool_choice"):
+                openai_kwargs["tool_choice"] = kwargs["tool_choice"]
+        
+        if kwargs.get("top_p"):
+            openai_kwargs["top_p"] = kwargs["top_p"]
+        
+        if kwargs.get("presence_penalty"):
+            openai_kwargs["presence_penalty"] = kwargs["presence_penalty"]
+        
+        if kwargs.get("frequency_penalty"):
+            openai_kwargs["frequency_penalty"] = kwargs["frequency_penalty"]
+        
+        if kwargs.get("stop"):
+            openai_kwargs["stop"] = kwargs["stop"]
+        
+        return client.chat.completions.create(**openai_kwargs)
+    
     def chat_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, stream: Optional[bool] = None
                             ,custom_model: Optional[str] = None, tool_choice: Optional[Union[str, Dict[str, Any]]] = None):
         """
@@ -471,6 +559,11 @@ class LLMClient:
             >>> response = client.chat_completion(messages)
             >>> print(response.choices[0].message.content)
         """
+        from agent.utils.shutdown import is_shutting_down, shutdown
+        
+        if is_shutting_down():
+            raise Exception("系统正在关闭，取消 LLM 调用")
+        
         try:
             config = self.current_model_config or {}
             use_stream = stream if stream is not None else config.get("stream", False)
@@ -502,13 +595,18 @@ class LLMClient:
             import json
             import base64
             
+            model_name = kwargs.get("model", "")
+            
+            if self._is_openai_compatible_model(model_name, config):
+                return self._call_openai_compatible(messages, config, kwargs)
+            
             for msg in messages:
                 if isinstance(msg.get("content"), list):
                     for item in msg.get("content", []):
                         if item.get("type") == "image_url":
                             img_url = item.get("image_url", {}).get("url", "")
                             if img_url.startswith("data:"):
-                                logger.info(f"[LLMClient] 📷 发送图片， Base64 长度: {len(img_url)}")
+                                logger.info(f"[LLMClient] 📷 发送图片, Base64 长度: {len(img_url)}")
                                 try:
                                     header, data = img_url.split(",", 1)
                                     mime_part = header.split(":")[1] if ":" in header else "image/jpeg"

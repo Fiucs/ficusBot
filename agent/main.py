@@ -98,13 +98,19 @@ async def run_cli(agent):
     
     current_agent_id = "default"
     
+    from agent.utils.shutdown import is_shutting_down
+    
     while True:
+        if is_shutting_down():
+            print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
+            break
+        
         try:
             user_input = input(f"{Fore.CYAN}❯ [{current_agent_id}] {Style.RESET_ALL}").strip()
             if not user_input:
                 continue
             
-            if user_input in ("/exit", "/quit", "1", "exit", "quit"):
+            if user_input in ("/exit", "/quit"):
                 print(f"{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
                 break
             
@@ -258,7 +264,7 @@ async def run_cli(agent):
             
         except KeyboardInterrupt:
             print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
-            break  
+            exit(0)  
         except EOFError:
             print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
             break   
@@ -267,6 +273,7 @@ async def run_cli(agent):
                 print(f"\n{Fore.YELLOW}再见！👋{Style.RESET_ALL}")
                 break
             print(f"{Fore.RED}错误: {str(e)}{Style.RESET_ALL}")
+            break
 
 
 def get_agent(agent_id: str = "default") -> "Agent":

@@ -345,7 +345,11 @@ class ConfigLoader:
 
             for model_alias, model_config in provider_models.items():
                 full_alias = f"{provider_name}/{model_alias}"
-                litellm_model_name = f"{provider_name}/{model_config.get('model_name', model_alias)}"
+                model_name_value = model_config.get('model_name', model_alias)
+                if '/' in model_name_value:
+                    litellm_model_name = model_name_value
+                else:
+                    litellm_model_name = f"{provider_name}/{model_name_value}"
                 full_config = {
                     **global_config,
                     **provider_base_config,
